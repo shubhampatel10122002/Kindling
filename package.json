@@ -1,0 +1,40 @@
+{
+  "name": "primer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n next,ws -c cyan,magenta \"next dev -p 3000\" \"npm run ws\"",
+    "ws": "tsx watch server/index.ts",
+    "build": "next build",
+    "start": "next start",
+    "db:migrate": "tsx db/migrate.ts",
+    "db:seed": "tsx db/seed.ts",
+    "db:reset": "tsx db/migrate.ts --reset && tsx db/seed.ts",
+    "check": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.ts",
+    "selftest": "tsx scripts/selftest.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.0",
+    "ai": "^5.0.0",
+    "dotenv": "^16.4.7",
+    "microsoft-cognitiveservices-speech-sdk": "^1.44.0",
+    "next": "^15.1.6",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

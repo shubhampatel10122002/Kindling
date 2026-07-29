@@ -1,0 +1,79 @@
+/**
+ * Non-LLM template lines. Used for the fixed sensitive-topic response (PLAN.md §5,
+ * which must never be improvised), for the nudge ladder, and as the safe fallback
+ * when the narrator's safety pass fails twice (PLAN.md §7).
+ */
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Sound out a word letter by letter: "b... l... ue". */
+function soundOut(word: string): string {
+  return word.replace(/[^a-zA-Z]/g, '').split('').join('... ');
+}
+
+export const coachLine = (word: string, attempt: number): string => {
+  const clean = word.replace(/[^a-zA-Z']/g, '');
+  if (attempt <= 1) {
+    return pick([
+      `Let's sound it out together: ${soundOut(clean)}. What word is that?`,
+      `Try that one again with me. ${soundOut(clean)}.`,
+      `Nice try! Look at the letters: ${soundOut(clean)}.`,
+    ]);
+  }
+  return pick([
+    `That one is tricky. It says "${clean}". Say it with me: ${clean}.`,
+    `This word is "${clean}". You've got it — let's keep going.`,
+  ]);
+};
+
+export const giveWordLine = (word: string): string => {
+  const clean = word.replace(/[^a-zA-Z']/g, '');
+  return pick([
+    `That word is "${clean}". Great sticking with it. Let's keep reading!`,
+    `It says "${clean}". You worked hard on that one. Onward!`,
+  ]);
+};
+
+export const encourageLine = (detail: string): string =>
+  pick([
+    `Wow, you read ${detail} perfectly! Your reading voice is getting so strong.`,
+    `That was beautiful reading — ${detail} came out just right!`,
+    `You nailed ${detail}. I could really hear the story!`,
+  ]);
+
+export const silenceNudge = (firstWord: string): string => {
+  const letter = firstWord.replace(/[^a-zA-Z]/g, '').charAt(0).toLowerCase();
+  return `Take your time. The first word starts with ${letter}${letter}${letter}...`;
+};
+
+export const stillThereLine = (): string =>
+  pick([`Are you still there, friend?`, `Still with me? I'm right here when you're ready.`]);
+
+export const pausedLine = (): string =>
+  `I'll wait right here. Tap the owl whenever you want to keep going!`;
+
+export const talkTimeoutLine = (): string =>
+  pick([`Tap me when you want to chat!`, `I didn't hear anything — tap me again when you're ready!`]);
+
+export const unclearLine = (): string =>
+  `Hmm, I didn't catch that! Want to tell me again, or keep reading?`;
+
+/**
+ * FIXED comfort template for sensitive topics. Never LLM-generated. PLAN.md §5.
+ */
+export const sensitiveTopicLine = (character: string): string =>
+  `That's a really big question, and I'm glad you told me. That's a great thing to talk about with your grown-up. They give the best hugs too. Should we find out what happens to ${character}?`;
+
+/** Last-resort narrator line when the safety pass fails twice. */
+export const safeFallbackBeat = (character: string): string =>
+  `${character} took a big breath and looked around. Something new was about to happen.`;
+
+export const safeFallbackPassage = (): string => `The sun was warm and the path was long.`;
+
+export const openingLine = (name: string): string =>
+  `Hi ${name}! I'm so happy you're here. Let's read a story together.`;
+
+export const goodbyeLine = (name: string, detail: string): string =>
+  `That was wonderful, ${name}. ${detail} See you next time!`;

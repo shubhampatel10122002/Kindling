@@ -1,0 +1,111 @@
+/**
+ * Verifies every external dependency with the configured credentials.
+ * Run: npm run smoke
+ */
+import { generateText } from 'ai';
+import { pool, query, getDemoChild } from '../lib/db';
+import { model } from '../lib/llm/client';
+import { checkAzureCredentials } from '../server/azure';
+import { checkCartesia } from '../server/cartesia';
+import { classifyIntent } from '../lib/llm/intent';
+import { env } from '../lib/env';
+
+const results: { name: string; ok: boolean; detail: string }[] = [];
+
+const TIMEOUT_MS = 25_000;
+
+/**
+ * Every check is bounded. A blocked network (corporate proxy, firewall) makes
+ * the Azure and Cartesia SDKs hang silently rather than error, so a hard timeout
+ * is the difference between a diagnosable failure and a mystery.
+ */
+async function check(name: string, fn: () => Promise<string>) {
+  process.stdout.write(`  ${name}… `);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const detail = await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `timed out after ${TIMEOUT_MS / 1000}s — the host is unreachable (firewall, proxy, or offline)`,
+              ),
+            ),
+          TIMEOUT_MS,
+        );
+      }),
+    ]);
+    results.push({ name, ok: true, detail });
+    console.log(`OK — ${detail}`);
+  } catch (err) {
+    const detail = String((err as Error)?.message ?? err);
+    results.push({ name, ok: false, detail });
+    console.log(`FAILED — ${detail}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function main() {
+  console.log('\nPrimer smoke test\n');
+
+  await check('Postgres', async () => {
+    const child = await getDemoChild();
+    if (!child) throw new Error('no child seeded — run npm run db:reset');
+    const skills = await query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM skill_mastery WHERE child_id = $1',
+      [child.id],
+    );
+    return `child "${child.name}", ${skills[0].n} skills tracked`;
+  });
+
+  await check('Anthropic (Sonnet)', async () => {
+    const { text } = await generateText({
+      model: model.narrator(),
+      prompt: 'Reply with exactly the word: ready',
+    });
+    return `${text.trim().slice(0, 20)}`;
+  });
+
+  await check('Anthropic (Haiku intent router)', async () => {
+    const r = await classifyIntent({
+      transcript: 'my dog is named Max!',
+      currentPassage: 'The cat sat.',
+      currentWord: 'cat',
+      storyPremise: 'A cat looks for a bell',
+    });
+    if (r.intent !== 'chitchat') throw new Error(`expected chitchat, got ${r.intent}`);
+    return `classified as ${r.intent} (topic: ${r.interestTopic ?? 'none'})`;
+  });
+
+  await check(`Azure Speech (${env.azureRegion})`, async () => {
+    await checkAzureCredentials();
+    return 'credentials accepted, push stream opened';
+  });
+
+  await check(`Cartesia (${env.cartesiaModel})`, async () => {
+    const bytes = await checkCartesia();
+    const seconds = bytes / 4 / 44100;
+    return `${bytes} bytes of audio (~${seconds.toFixed(2)}s)`;
+  });
+
+  const failed = results.filter((r) => !r.ok);
+  console.log('');
+  if (failed.length === 0) {
+    console.log('All checks passed. Run `npm run dev` and open http://localhost:3000\n');
+  } else {
+    console.log(`${failed.length} check(s) failed:\n`);
+    for (const f of failed) console.log(`  - ${f.name}: ${f.detail}`);
+    console.log('');
+  }
+
+  await pool.end();
+  process.exit(failed.length === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

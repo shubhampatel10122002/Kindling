@@ -1,0 +1,257 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AudioEngine } from '@/lib/client/audio';
+import MicCheck from './MicCheck';
+import PassageView, { type WordState } from './PassageView';
+import TalkButton from './TalkButton';
+import DebugPanel from './DebugPanel';
+import type { Intent, Mode, ServerMessage, SessionPlan } from '@/lib/types';
+
+const WS_URL =
+  process.env.NEXT_PUBLIC_WS_URL ??
+  (typeof window !== 'undefined'
+    ? `ws://${window.location.hostname}:3001/session`
+    : 'ws://localhost:3001/session');
+
+export default function SessionView() {
+  const [micReady, setMicReady] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [mode, setMode] = useState<Mode>('IDLE');
+  const [narratorText, setNarratorText] = useState('');
+  const [speaking, setSpeaking] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [words, setWords] = useState<WordState[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const [plan, setPlan] = useState<SessionPlan | null>(null);
+  const [debug, setDebug] = useState<Record<string, unknown>>({});
+  const [lastIntent, setLastIntent] = useState<{ transcript: string; intent: Intent | null } | null>(
+    null,
+  );
+  const [transcript, setTranscript] = useState<{ kind: string; text: string }[]>([]);
+  const [flags, setFlags] = useState<{ type: string; detail: string }[]>([]);
+  const [ended, setEnded] = useState(false);
+  const [error, setError] = useState('');
+
+  const engineRef = useRef<AudioEngine | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const gateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleServerMessage = useCallback((msg: ServerMessage) => {
+    switch (msg.t) {
+      case 'ready':
+        setPlan(msg.plan);
+        break;
+
+      case 'mode':
+        setMode(msg.mode);
+        break;
+
+      case 'speak':
+        setNarratorText(msg.text);
+        setTranscript((t) => [...t, { kind: 'narrator', text: msg.text }]);
+        break;
+
+      case 'passage':
+        setWords(msg.words.map((w) => ({ word: w, status: 'pending', score: null })));
+        setCursor(0);
+        setTranscript((t) => [...t, { kind: 'passage', text: msg.text }]);
+        break;
+
+      case 'word':
+        setWords((ws) =>
+          ws.map((w, i) => (i === msg.index ? { ...w, status: msg.status, score: msg.score } : w)),
+        );
+        break;
+
+      case 'cursor':
+        setCursor(msg.index);
+        break;
+
+      case 'tts_start':
+        setSpeaking(true);
+        // Belt and suspenders: pause capture client-side too. PLAN.md §8.2
+        engineRef.current?.setMuted(true);
+        if (gateTimer.current) clearTimeout(gateTimer.current);
+        break;
+
+      case 'tts_end':
+        setSpeaking(false);
+        // Reopen 300ms after playback ends, to swallow the speaker tail.
+        if (gateTimer.current) clearTimeout(gateTimer.current);
+        gateTimer.current = setTimeout(() => engineRef.current?.setMuted(false), 300);
+        break;
+
+      case 'talk_open':
+        setListening(true);
+        break;
+
+      case 'talk_closed':
+        setListening(false);
+        if (msg.transcript) {
+          setLastIntent({ transcript: msg.transcript, intent: msg.intent });
+          setTranscript((t) => [
+            ...t,
+            { kind: `child · ${msg.intent ?? 'unknown'}`, text: msg.transcript! },
+          ]);
+        }
+        break;
+
+      case 'flag':
+        setFlags((f) => [{ type: msg.type, detail: msg.detail }, ...f]);
+        break;
+
+      case 'debug':
+        setDebug((d) => ({ ...d, [msg.key]: msg.value }));
+        if (msg.key === 'plan') setPlan(msg.value as SessionPlan);
+        break;
+
+      case 'nudge':
+        setTranscript((t) => [...t, { kind: 'nudge', text: msg.text }]);
+        break;
+
+      case 'error':
+        setError(msg.message);
+        break;
+
+      case 'ended':
+        setEnded(true);
+        setMode('END');
+        break;
+    }
+  }, []);
+
+  const connect = useCallback(
+    (engine: AudioEngine) => {
+      const ws = new WebSocket(WS_URL);
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        engine.onAudioFrame = (pcm) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(pcm);
+        };
+      };
+
+      ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          engine.playChunk(e.data);
+          return;
+        }
+        try {
+          handleServerMessage(JSON.parse(e.data) as ServerMessage);
+        } catch {
+          /* ignore malformed frame */
+        }
+      };
+
+      ws.onclose = () => setConnected(false);
+      ws.onerror = () =>
+        setError('Could not reach the session server. Is `npm run ws` running on port 3001?');
+    },
+    [handleServerMessage],
+  );
+
+  function onMicReady(engine: AudioEngine) {
+    engineRef.current = engine;
+    setMicReady(true);
+    connect(engine);
+  }
+
+  const send = (msg: unknown) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  };
+
+  function pressTalk() {
+    // Barge-in: kill local playback the instant the button goes down.
+    engineRef.current?.stopPlayback();
+    engineRef.current?.setMuted(false);
+    setSpeaking(false);
+    setListening(true);
+    send({ t: 'talk_start' });
+  }
+
+  function releaseTalk() {
+    if (!listening) return;
+    setListening(false);
+    send({ t: 'talk_end' });
+  }
+
+  useEffect(() => {
+    return () => {
+      if (gateTimer.current) clearTimeout(gateTimer.current);
+      wsRef.current?.close();
+      void engineRef.current?.destroy();
+    };
+  }, []);
+
+  if (!micReady) return <MicCheck onReady={onMicReady} />;
+
+  return (
+    <div className="shell">
+      <main className="stage">
+        <header className="header">
+          <div className="logo">Primer</div>
+          <div className="mode-pill" data-mode={mode}>
+            {mode.replace('_', ' ')}
+          </div>
+          <div className="status-line">
+            {connected ? (speaking ? 'Ollie is speaking…' : 'listening') : 'connecting…'}
+          </div>
+        </header>
+
+        {error && (
+          <div className="miccheck-error" style={{ marginBottom: 20 }}>
+            <h3>Something went wrong</h3>
+            <p style={{ margin: 0 }}>{error}</p>
+          </div>
+        )}
+
+        <div className={`narrator${speaking ? ' speaking' : ''}`}>
+          <span className="owl-mini">🦉</span>
+          <span>{narratorText || 'Getting your story ready…'}</span>
+        </div>
+
+        {mode === 'PAUSED' ? (
+          <div>
+            <div className="passage-label">Paused</div>
+            <p className="empty-passage">Ollie is waiting for you.</p>
+            <button className="btn btn-primary" onClick={() => send({ t: 'resume' })}>
+              I&rsquo;m back!
+            </button>
+          </div>
+        ) : ended ? (
+          <div>
+            <div className="passage-label">All done</div>
+            <p className="empty-passage">
+              Great reading today! Hit <b>Consolidate memory</b> to see what Ollie learned.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="passage-label">Your turn to read</div>
+            <PassageView words={words} cursor={cursor} />
+          </>
+        )}
+
+        <TalkButton
+          listening={listening}
+          disabled={!connected || ended}
+          onPress={pressTalk}
+          onRelease={releaseTalk}
+        />
+      </main>
+
+      <DebugPanel
+        mode={mode}
+        plan={plan}
+        debug={debug}
+        lastIntent={lastIntent}
+        transcript={transcript}
+        liveFlags={flags}
+      />
+    </div>
+  );
+}
