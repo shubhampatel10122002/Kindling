@@ -26,6 +26,20 @@ npm run smoke
 Cartesia, and prints exactly which one is failing. Get it fully green before
 running a session — a missing credential shows up mid-story otherwise.
 
+### `relation "children" does not exist`
+
+The schema was never applied. `docker compose up -d` creates the `primer`
+**database** automatically, so connecting succeeds even with zero tables — which
+is why this looks like a connection problem but isn't. Fix:
+
+```bash
+npm run db:reset
+```
+
+`db:migrate` prints the database it is targeting and verifies all 9 tables exist
+afterwards, so if it reports success against the wrong target you'll see it. Note
+that an exported `DATABASE_URL` in your shell takes precedence over `.env.local`.
+
 ## Run
 
 ```bash

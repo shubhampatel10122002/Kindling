@@ -3,7 +3,7 @@
  * Run: npm run smoke
  */
 import { generateText } from 'ai';
-import { pool, query, getDemoChild } from '../lib/db';
+import { pool, query, getDemoChild, schemaIsReady, describeTarget } from '../lib/db';
 import { model } from '../lib/llm/client';
 import { checkAzureCredentials } from '../server/azure';
 import { checkCartesia } from '../server/cartesia';
@@ -51,9 +51,17 @@ async function check(name: string, fn: () => Promise<string>) {
 async function main() {
   console.log('\nPrimer smoke test\n');
 
-  await check('Postgres', async () => {
+  await check(`Postgres (${describeTarget()})`, async () => {
+    // Check the schema before querying it, so a fresh database reports the fix
+    // rather than a raw "relation does not exist".
+    const { ready, missing } = await schemaIsReady();
+    if (!ready) {
+      throw new Error(
+        `connected, but the schema is not applied (missing: ${missing.join(', ')}) — run: npm run db:reset`,
+      );
+    }
     const child = await getDemoChild();
-    if (!child) throw new Error('no child seeded — run npm run db:reset');
+    if (!child) throw new Error('schema is present but no child is seeded — run: npm run db:seed');
     const skills = await query<{ n: number }>(
       'SELECT count(*)::int AS n FROM skill_mastery WHERE child_id = $1',
       [child.id],

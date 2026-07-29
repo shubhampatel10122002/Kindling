@@ -1,8 +1,18 @@
-import { pool, query, one } from '../lib/db';
+import { pool, query, one, waitForPostgres, schemaIsReady, describeTarget } from '../lib/db';
 import { SKILLS } from '../lib/skills';
 
 /** Seeds the single demo child, a cold-start mastery profile, and empty memory. */
 async function main() {
+  await waitForPostgres();
+
+  const { ready, missing } = await schemaIsReady();
+  if (!ready) {
+    throw new Error(
+      `Cannot seed — the schema is not applied to ${describeTarget()}.\n` +
+        `Missing tables: ${missing.join(', ')}\n\nRun: npm run db:migrate\n`,
+    );
+  }
+
   const name = process.env.SEED_CHILD_NAME || 'Maya';
   const age = Number(process.env.SEED_CHILD_AGE || 5);
   const notes =
@@ -70,7 +80,8 @@ async function main() {
   await pool.end();
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch(async (err) => {
+  console.error(`\nSeed failed: ${err?.message ?? err}\n`);
+  await pool.end().catch(() => {});
   process.exit(1);
 });

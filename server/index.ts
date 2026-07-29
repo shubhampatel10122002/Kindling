@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { env } from '../lib/env';
-import { getDemoChild, query, one } from '../lib/db';
+import { getDemoChild, query, one, schemaIsReady, describeTarget } from '../lib/db';
 import { Session } from './session';
 import type { ChildMemory, ClientMessage, Mastery } from '../lib/types';
 
@@ -16,12 +16,26 @@ wss.on('connection', async (ws) => {
   let session: Session | null = null;
 
   try {
+    const { ready, missing } = await schemaIsReady();
+    if (!ready) {
+      ws.send(
+        JSON.stringify({
+          t: 'error',
+          message:
+            `Database ${describeTarget()} has no schema (missing: ${missing.join(', ')}). ` +
+            'Run `npm run db:reset` in the project directory, then reload this page.',
+        }),
+      );
+      ws.close();
+      return;
+    }
+
     const child = await getDemoChild();
     if (!child) {
       ws.send(
         JSON.stringify({
           t: 'error',
-          message: 'No child in the database. Run: npm run db:reset',
+          message: 'The database has no child seeded. Run `npm run db:seed`, then reload.',
         }),
       );
       ws.close();

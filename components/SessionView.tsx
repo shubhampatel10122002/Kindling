@@ -205,7 +205,7 @@ export default function SessionView() {
         {error && (
           <div className="miccheck-error" style={{ marginBottom: 20 }}>
             <h3>Something went wrong</h3>
-            <p style={{ margin: 0 }}>{error}</p>
+            <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{error}</p>
           </div>
         )}
 
