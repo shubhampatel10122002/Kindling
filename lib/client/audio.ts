@@ -36,6 +36,14 @@ export class AudioEngine {
     this.ctx = new AudioContext({ sampleRate: TTS_SAMPLE_RATE });
     if (this.ctx.state === 'suspended') await this.ctx.resume();
 
+    if (this.ctx.sampleRate !== TTS_SAMPLE_RATE) {
+      // The browser refused our requested rate. Playback still works (it
+      // resamples), but flag it — it changes the maths if TTS ever sounds pitched.
+      console.warn(
+        `[audio] AudioContext runs at ${this.ctx.sampleRate}Hz, requested ${TTS_SAMPLE_RATE}Hz`,
+      );
+    }
+
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -71,6 +79,14 @@ export class AudioEngine {
   /** Queue one float32 PCM chunk from the server for gapless playback. */
   playChunk(pcm: ArrayBuffer) {
     if (!this.ctx) return;
+
+    // A backgrounded tab or an OS audio-device change can suspend the context
+    // after it was unlocked. Scheduled sources then play into silence with no
+    // error, which looks exactly like "the app is broken".
+    if (this.ctx.state === 'suspended') {
+      void this.ctx.resume().catch(() => {});
+    }
+
     // Float32Array needs a 4-byte-aligned length; drop any ragged tail.
     const usable = pcm.byteLength - (pcm.byteLength % 4);
     if (usable <= 0) return;

@@ -28,6 +28,9 @@ export default function DebugPanel({
   lastIntent,
   transcript,
   liveFlags,
+  audioBytes,
+  onTtsTest,
+  connected,
 }: {
   mode: Mode;
   plan: SessionPlan | null;
@@ -35,6 +38,9 @@ export default function DebugPanel({
   lastIntent: { transcript: string; intent: Intent | null } | null;
   transcript: { kind: string; text: string }[];
   liveFlags: { type: string; detail: string }[];
+  audioBytes: number;
+  onTtsTest: () => void;
+  connected: boolean;
 }) {
   const [memory, setMemory] = useState<MemoryResponse | null>(null);
   const [consolidating, setConsolidating] = useState(false);
@@ -73,6 +79,10 @@ export default function DebugPanel({
   }
 
   const words = (debug.lastWords as any[]) ?? [];
+  const tts = debug.lastTts as { bytes: number; seconds: number; firstChunkMs: number } | undefined;
+  const sentBytes = tts?.bytes ?? null;
+  const sentSeconds = tts?.seconds ?? 0;
+  const firstChunkMs = tts && tts.firstChunkMs >= 0 ? tts.firstChunkMs : null;
 
   return (
     <aside className="panel">
@@ -97,6 +107,48 @@ export default function DebugPanel({
       <div className="kv">
         <span>Memory version</span>
         <span>v{memory?.memory.version ?? 0}</span>
+      </div>
+
+      <h2>Audio</h2>
+      <div className="panel-section">
+        <button
+          className="panel-btn"
+          onClick={onTtsTest}
+          disabled={!connected}
+          style={{ marginBottom: 8 }}
+        >
+          🔊 Test sound
+        </button>
+        <div className="kv">
+          <span>Sent by server</span>
+          <span>
+            {sentBytes === null
+              ? '—'
+              : `${sentBytes} B · ${sentSeconds}s${firstChunkMs === null ? '' : ` · ${firstChunkMs}ms`}`}
+          </span>
+        </div>
+        <div className="kv">
+          <span>Received by browser</span>
+          <span>{audioBytes} B</span>
+        </div>
+        {sentBytes !== null && sentBytes > 0 && audioBytes === 0 && (
+          <div className="flag sensitive_topic" style={{ marginTop: 8 }}>
+            <b>audio not arriving</b>
+            <div>The server produced audio but this browser received none.</div>
+          </div>
+        )}
+        {sentBytes === 0 && (
+          <div className="flag sensitive_topic" style={{ marginTop: 8 }}>
+            <b>no audio produced</b>
+            <div>Cartesia returned nothing — check the voice id and model in .env.local.</div>
+          </div>
+        )}
+        {audioBytes > 0 && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Audio is reaching the browser. If you still hear nothing, check the system
+            output device and tab mute.
+          </div>
+        )}
       </div>
 
       <h2>Last Azure result</h2>

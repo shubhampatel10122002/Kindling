@@ -3,6 +3,7 @@ import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import { model } from './client';
 import { runSafetyPass } from './safety';
+import { checkVocab } from '../vocab';
 import * as T from '../templates';
 import type { Child, ChildMemory, SessionPlan } from '../types';
 
@@ -156,22 +157,34 @@ export class Narrator {
       return this.fallback(mode);
     }
 
-    // Safety pass before anything reaches TTS. PLAN.md §7.
+    // Objective constraints first — arithmetic, not an LLM judgment call.
+    const vocab = checkVocab(turn.child_passage, this.plan.vocab_constraints);
+
+    // Then the fuzzy safety judgments. Run in parallel with nothing else; this is
+    // the only LLM call in the hot path besides the narrator itself.
     let verdict = await runSafetyPass({ turn, plan: this.plan, mode });
-    if (!verdict.ok) {
-      console.warn('[narrator] safety pass failed:', verdict.reason);
+
+    const needsRetry = !verdict.ok || !vocab.ok;
+    if (needsRetry) {
+      const why = [verdict.ok ? '' : verdict.reason, vocab.feedback].filter(Boolean).join(' ');
+      console.warn(`[narrator] retrying (${verdict.severity}): ${why}`);
       try {
-        turn = await attempt(
-          `Your previous draft was rejected by the safety check for this reason: ${verdict.reason}. Rewrite it so it passes.`,
-        );
-        verdict = await runSafetyPass({ turn, plan: this.plan, mode });
+        const retry = await attempt(`Your previous draft had a problem: ${why} Fix it and try again.`);
+        const retryVerdict = await runSafetyPass({ turn: retry, plan: this.plan, mode });
+
+        if (retryVerdict.severity === 'hard') {
+          // Two strikes on genuine safety — this is what templates are for.
+          console.error('[narrator] hard safety failure twice, using template:', retryVerdict.reason);
+          return this.fallback(mode);
+        }
+        // Otherwise take the retry. A slightly long sentence is better pedagogy
+        // than the fallback template, and the child hears a real story.
+        turn = retry;
+        verdict = retryVerdict;
       } catch (err) {
-        console.error('[narrator] regeneration failed', err);
-        return this.fallback(mode);
-      }
-      if (!verdict.ok) {
-        console.error('[narrator] safety pass failed twice, using template:', verdict.reason);
-        return this.fallback(mode);
+        console.error('[narrator] regeneration failed, keeping first draft', err);
+        // Only refuse the first draft if it was a hard safety failure.
+        if (verdict.severity === 'hard') return this.fallback(mode);
       }
     }
 

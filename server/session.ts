@@ -106,18 +106,26 @@ export class Session {
   // -------------------------------------------------------------------------
 
   async start() {
-    // Prefer the plan consolidation prepared last time; otherwise generate one now.
-    const stored = await one<{ plan: SessionPlan }>(
-      'SELECT plan FROM next_plans WHERE child_id = $1',
-      [this.child.id],
-    );
+    this.tick = setInterval(() => this.onTick(), 500);
 
-    if (stored?.plan) {
-      this.plan = stored.plan;
-    } else {
+    // Speak a template greeting FIRST, with no LLM in the way. Planning plus the
+    // opening narrator turn is several seconds of round-trips; a child staring at
+    // a silent screen for that long assumes it is broken. This also means the
+    // very first thing that happens in a session exercises the whole audio path.
+    this.setMode('NARRATE', 'greeting');
+    const greeting = this.speak(T.openingLine(this.child.name));
+
+    // Resolve the plan while the greeting is playing.
+    const planning = (async (): Promise<SessionPlan> => {
+      const stored = await one<{ plan: SessionPlan }>(
+        'SELECT plan FROM next_plans WHERE child_id = $1',
+        [this.child.id],
+      );
+      if (stored?.plan) return stored.plan;
+
       const targets = pickTargets(this.mastery);
       try {
-        this.plan = await generateSessionPlan({
+        return await generateSessionPlan({
           child: this.child,
           memory: this.memory,
           mastery: this.mastery,
@@ -125,9 +133,13 @@ export class Session {
         });
       } catch (err) {
         console.error('[session] planner failed, using fallback', err);
-        this.plan = fallbackPlan(this.child, targets);
+        return fallbackPlan(this.child, targets);
       }
-    }
+    })();
+
+    const [, plan] = await Promise.all([greeting, planning]);
+    if (this.closed) return;
+    this.plan = plan;
 
     const row = await one<{ id: string }>(
       'INSERT INTO sessions (child_id, plan) VALUES ($1, $2) RETURNING id',
@@ -140,9 +152,10 @@ export class Session {
     this.send({ t: 'ready', childName: this.child.name, plan: this.plan });
     this.debug('plan', this.plan);
 
-    this.tick = setInterval(() => this.onTick(), 500);
-
-    await this.narrate('OPENING', `Greet ${this.child.name} and begin beat 0.`);
+    await this.narrate(
+      'OPENING',
+      `${this.child.name} has already been greeted out loud, so do not greet them again. Go straight into beat 0 of the story.`,
+    );
   }
 
   async handleMessage(msg: ClientMessage) {
@@ -165,6 +178,13 @@ export class Session {
         break;
       case 'stop':
         await this.end('child asked to stop');
+        break;
+      case 'tts_test':
+        // Exercises the real audio path — Cartesia -> WebSocket -> Web Audio —
+        // with no LLM involved, so "can I hear anything at all?" is one click.
+        await this.speak(
+          "Hello! This is Ollie testing the sound. If you can hear me, the audio is working.",
+        );
         break;
       case 'ping':
         break;
@@ -207,11 +227,33 @@ export class Session {
     this.send({ t: 'speak', text });
     this.log('narrator', text);
 
-    const handle = tts().speak(text, (chunk) => this.sendAudio(chunk));
+    // Count what actually leaves the server. When a founder reports "I can't hear
+    // anything", this line is the difference between a server-side and a
+    // browser-side problem — and it costs one integer.
+    let bytes = 0;
+    const started = Date.now();
+    let firstChunkMs = -1;
+
+    const handle = tts().speak(text, (chunk) => {
+      if (firstChunkMs < 0) firstChunkMs = Date.now() - started;
+      bytes += chunk.length;
+      this.sendAudio(chunk);
+    });
     this.speaking = handle;
 
     try {
       await handle.done;
+      const seconds = bytes / 4 / AUDIO.ttsSampleRate;
+      if (bytes === 0) {
+        console.error(
+          `[tts] produced NO audio for "${text.slice(0, 50)}…" — check CARTESIA_API_KEY, CARTESIA_VOICE_ID and CARTESIA_MODEL`,
+        );
+      } else {
+        console.log(
+          `[tts] ${bytes} bytes (~${seconds.toFixed(2)}s audio), first chunk in ${firstChunkMs}ms`,
+        );
+      }
+      this.debug('lastTts', { bytes, seconds: Number(seconds.toFixed(2)), firstChunkMs });
     } finally {
       this.speaking = null;
       this.isSpeaking = false;

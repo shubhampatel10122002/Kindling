@@ -4,25 +4,42 @@ import { model } from './client';
 import type { SessionPlan } from '../types';
 import type { NarratorTurn } from './narrator';
 
+/**
+ * Safety pass over speak_text + child_passage before TTS. PLAN.md §7.
+ *
+ * Scope is deliberately narrow. An earlier version also asked the model to
+ * enforce `vocab_constraints`, which gave it a free-text rubric and a veto over
+ * every turn — it responded by arguing with itself about whether "sniffs" is
+ * CVC or CCVC and rejecting good passages, so nothing ever reached the child.
+ * Objective constraints are now checked in `lib/vocab.ts`; this pass covers only
+ * the genuinely fuzzy judgments an LLM is actually good at.
+ *
+ * Failures are graded, because "scary content" and "gave the answer away" do not
+ * deserve the same response:
+ *   - hard: never reaches the child. Regenerate, then fall back to a template.
+ *   - soft: worth one retry, but shipping it beats shipping a bland template.
+ */
+
 const schema = z.object({
-  age_appropriate: z.boolean(),
-  on_story: z.boolean(),
-  obeys_vocab_constraints: z.boolean(),
-  withheld_answer_if_socratic: z.boolean(),
-  no_brand_or_ip: z.boolean(),
+  age_appropriate: z
+    .boolean()
+    .describe('Nothing scary, violent, or sad about family. Warm, simple language.'),
+  no_brand_or_ip: z.boolean().describe('No real-world brands or copyrighted characters.'),
+  on_story: z.boolean().describe('Belongs to the story world, or is a natural reply to the child.'),
+  withheld_answer_if_socratic: z
+    .boolean()
+    .describe('If MODE is SOCRATIC, a guiding question was asked instead of the answer given. Otherwise true.'),
   reason: z.string().describe('Empty string when everything passed; otherwise the single worst problem.'),
 });
 
+export type SafetySeverity = 'ok' | 'soft' | 'hard';
+
 export interface SafetyVerdict {
   ok: boolean;
+  severity: SafetySeverity;
   reason: string;
 }
 
-/**
- * Yes/no rubric run over speak_text + child_passage before TTS. PLAN.md §7.
- * Fails open on transport errors — a Haiku outage must not brick a live session,
- * and the narrator prompt already carries the same hard rules.
- */
 export async function runSafetyPass(args: {
   turn: NarratorTurn;
   plan: SessionPlan;
@@ -35,40 +52,48 @@ export async function runSafetyPass(args: {
       model: model.safety(),
       schema,
       system: [
-        'You are a strict safety and pedagogy checker for a reading app used by a young child.',
+        'You are a content checker for a reading app used by a young child.',
         'You are given text an AI narrator is about to say aloud, and the passage the child will read.',
-        'Answer each check honestly. A single failure means the text must be regenerated.',
         '',
-        'Checks:',
-        '- age_appropriate: nothing scary, violent, or sad about family; warm and simple language.',
-        '- on_story: it belongs to the story world described by the plan (or is a natural response to the child).',
-        '- obeys_vocab_constraints: the CHILD PASSAGE (ignore the narrator text for this check) stays within the max sentence length and uses the allowed spelling patterns. If child_passage is null, this check passes.',
-        '- withheld_answer_if_socratic: if MODE is SOCRATIC, the narrator asked a guiding question instead of just giving the answer. If MODE is not SOCRATIC, this check passes.',
-        '- no_brand_or_ip: no real-world brands or copyrighted characters (Elsa, Pokemon, Marvel, Disney, etc).',
+        'Judge ONLY the four checks in the schema. Answer each with a boolean.',
+        'Do NOT evaluate reading level, spelling patterns, phonics, word difficulty, or',
+        'sentence length — those are checked separately by code, and second-guessing',
+        'them here blocks good content.',
+        '',
+        'Be decisive. Do not deliberate in the reason field: give one short phrase.',
+        'Only fail a check for a clear, obvious problem.',
       ].join('\n'),
       prompt: [
         `MODE: ${mode}`,
-        `PLAN premise: ${plan.premise}`,
-        `PLAN characters: ${plan.characters.join(', ')}`,
-        `Max sentence words: ${plan.vocab_constraints.max_sentence_words}`,
-        `Allowed patterns: ${plan.vocab_constraints.allowed_patterns}`,
+        `Story premise: ${plan.premise}`,
+        `Characters: ${plan.characters.join(', ')}`,
         '',
         `NARRATOR SAYS: ${turn.speak_text}`,
         `CHILD PASSAGE: ${turn.child_passage ?? '(none)'}`,
       ].join('\n'),
     });
 
-    const failures: string[] = [];
-    if (!object.age_appropriate) failures.push('not age appropriate');
-    if (!object.on_story) failures.push('off-story');
-    if (!object.obeys_vocab_constraints) failures.push('violates vocab constraints');
-    if (!object.withheld_answer_if_socratic) failures.push('gave away the answer in SOCRATIC mode');
-    if (!object.no_brand_or_ip) failures.push('contains brand or IP content');
+    // Content that must never reach a child.
+    if (!object.age_appropriate) {
+      return { ok: false, severity: 'hard', reason: object.reason || 'not age appropriate' };
+    }
+    if (!object.no_brand_or_ip) {
+      return { ok: false, severity: 'hard', reason: object.reason || 'brand or IP content' };
+    }
 
-    if (failures.length === 0) return { ok: true, reason: '' };
-    return { ok: false, reason: object.reason || failures.join('; ') };
+    // Pedagogy misses: worth one retry, not worth falling back to a template.
+    if (!object.withheld_answer_if_socratic) {
+      return { ok: false, severity: 'soft', reason: object.reason || 'gave the answer away in SOCRATIC mode' };
+    }
+    if (!object.on_story) {
+      return { ok: false, severity: 'soft', reason: object.reason || 'off-story' };
+    }
+
+    return { ok: true, severity: 'ok', reason: '' };
   } catch (err) {
+    // A Haiku outage must not brick a live session. The narrator's own system
+    // prompt already carries the same hard rules.
     console.error('[safety] check errored, failing open', err);
-    return { ok: true, reason: '' };
+    return { ok: true, severity: 'ok', reason: '' };
   }
 }

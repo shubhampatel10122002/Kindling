@@ -116,6 +116,8 @@ export type ClientMessage =
   | { t: 'talk_end' }
   | { t: 'resume' }
   | { t: 'stop' }
+  /** Speak a fixed line — verifies the audio path without involving the LLM. */
+  | { t: 'tts_test' }
   | { t: 'ping' };
 
 export type ServerMessage =

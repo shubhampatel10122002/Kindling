@@ -32,6 +32,8 @@ export default function SessionView() {
   const [flags, setFlags] = useState<{ type: string; detail: string }[]>([]);
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState('');
+  /** Bytes of TTS audio this browser actually received for the current utterance. */
+  const [audioBytes, setAudioBytes] = useState(0);
 
   const engineRef = useRef<AudioEngine | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -70,6 +72,7 @@ export default function SessionView() {
 
       case 'tts_start':
         setSpeaking(true);
+        setAudioBytes(0);
         // Belt and suspenders: pause capture client-side too. PLAN.md §8.2
         engineRef.current?.setMuted(true);
         if (gateTimer.current) clearTimeout(gateTimer.current);
@@ -136,6 +139,7 @@ export default function SessionView() {
 
       ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) {
+          setAudioBytes((n) => n + (e.data as ArrayBuffer).byteLength);
           engine.playChunk(e.data);
           return;
         }
@@ -198,7 +202,21 @@ export default function SessionView() {
             {mode.replace('_', ' ')}
           </div>
           <div className="status-line">
-            {connected ? (speaking ? 'Ollie is speaking…' : 'listening') : 'connecting…'}
+            {!connected
+              ? 'connecting…'
+              : speaking
+                ? 'Ollie is speaking…'
+                : ended
+                  ? 'all done'
+                  : mode === 'CHILD_READS'
+                    ? 'listening to you'
+                    : mode === 'TALK'
+                      ? 'listening…'
+                      : mode === 'PAUSED'
+                        ? 'paused'
+                        : // NARRATE / COACH / SOCRATIC / REMIX / ADAPT between
+                          // utterances all mean one thing: waiting on the LLM.
+                          'Ollie is thinking…'}
           </div>
         </header>
 
@@ -251,6 +269,9 @@ export default function SessionView() {
         lastIntent={lastIntent}
         transcript={transcript}
         liveFlags={flags}
+        audioBytes={audioBytes}
+        onTtsTest={() => send({ t: 'tts_test' })}
+        connected={connected}
       />
     </div>
   );
