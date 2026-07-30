@@ -89,7 +89,11 @@ const MODE_INSTRUCTIONS: Record<NarratorMode, string> = {
   OPENING:
     'Open the story. Greet the child by name in one short sentence, then tell the first beat in 2-3 sentences. Then give them their first passage to read.',
   NEXT_BEAT:
-    'The child just finished reading their passage well. React to the story (not to their reading), advance to the next beat in 2-3 sentences, then give the next passage.',
+    // A brief acknowledgment of the reading is prepended separately by the state
+    // machine (it knows how the reading actually went; this turn is prefetched
+    // before the child finishes). So react to the STORY here, and do not open
+    // with praise of your own or the child hears two compliments in a row.
+    'The child just finished reading their passage. React to the story, advance to the next beat in 2-3 sentences, then give the next passage. Do not praise or comment on their reading — that is handled elsewhere. Do not greet them.',
   COACH:
     'The child is stuck on a word. Give ONE short, encouraging coaching line that helps them sound it out. Do not re-tell the story. Set child_passage to null.',
   ENCOURAGE:

@@ -13,6 +13,7 @@ import { skillsForWord, SKILLS } from '../lib/skills';
 import { AUDIO } from '../lib/env';
 import { floatPcmToWav } from '../lib/wav';
 import { pickPraiseWord, mentionsWord } from '../lib/praise';
+import { sanitizeAcknowledgment, summarizeReading } from '../lib/ack';
 import type { WordAssessment } from '../lib/types';
 
 let passed = 0;
@@ -349,6 +350,51 @@ console.log('\nPraise word selection (never credit an unspoken word)');
   // Nothing passed — must return null rather than invent something.
   const t = new PassageTracker('Xylophone zebra.');
   ok('returns null when nothing was read', pickPraiseWord(t.words) === null);
+}
+
+// --------------------------------------------------------------------------
+console.log('\nTurn-transition acknowledgment');
+// --------------------------------------------------------------------------
+{
+  ok('accepts a plain interjection', sanitizeAcknowledgment('Nice!') === 'Nice!');
+  ok('adds punctuation for TTS prosody', sanitizeAcknowledgment('Great job') === 'Great job!');
+  ok('strips wrapping quotes', sanitizeAcknowledgment('"Wow!"') === 'Wow!');
+  ok('strips markdown', sanitizeAcknowledgment('**Lovely!**') === 'Lovely!');
+  ok('strips emoji', sanitizeAcknowledgment('Nice! 🎉') === 'Nice!');
+  ok('collapses whitespace', sanitizeAcknowledgment('  You   got  it! ') === 'You got it!');
+
+  ok('rejects empty', sanitizeAcknowledgment('') === null);
+  ok('rejects null', sanitizeAcknowledgment(null) === null);
+  ok(
+    'rejects anything too long to be a transition',
+    sanitizeAcknowledgment('That was a really wonderful piece of reading my friend') === null,
+  );
+  ok(
+    'rejects a word citation (the "glad" bug class)',
+    sanitizeAcknowledgment('You read "glides" well!') === null,
+  );
+  ok('rejects digits', sanitizeAcknowledgment('All 5 words!') === null);
+  ok(
+    'rejects continuing the story',
+    sanitizeAcknowledgment('Nice! Blue flew away over the hills.') === null,
+  );
+
+  // Band classification drives the tone the model is asked for.
+  const flawless = new PassageTracker('The frog hops fast.');
+  flawless.ingest([word('The', 96), word('frog', 92), word('hops', 90), word('fast', 94)]);
+  ok('flawless read is banded flawless', summarizeReading(flawless.words).band === 'flawless');
+
+  const effortful = new PassageTracker('The dragon roared.');
+  effortful.ingest([word('The', 95)]);
+  effortful.markGiven(1);
+  effortful.ingest([word('roared', 88)]);
+  ok('a given word makes it effortful', summarizeReading(effortful.words).band === 'effortful');
+
+  const solid = new PassageTracker('The cat sat down.');
+  solid.ingest([word('The', 95)]);
+  solid.ingest([word('cat', 40, 'Mispronunciation', [{ phoneme: 'k', accuracyScore: 20 }])]);
+  solid.ingest([word('cat', 90), word('sat', 92), word('down', 91)]);
+  ok('one wobble is banded solid', summarizeReading(solid.words).band === 'solid', summarizeReading(solid.words).band);
 }
 
 // --------------------------------------------------------------------------

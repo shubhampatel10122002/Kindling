@@ -36,6 +36,17 @@ export const giveWordLine = (word: string): string => {
   ]);
 };
 
+/**
+ * Fallback only — the acknowledgment between turns is normally model-generated
+ * (lib/llm/acknowledge.ts) so it fits what the child just did. These are used
+ * when that call fails or returns something unusable.
+ */
+export const ackFallback = (band: 'flawless' | 'solid' | 'effortful'): string => {
+  if (band === 'flawless') return pick(['Perfect!', 'Wow, every word!', 'Beautiful reading!']);
+  if (band === 'effortful') return pick(['You stuck with it!', 'Good work on that one!', 'Nice effort!']);
+  return pick(['Nice!', 'Great job!', 'Well done!', 'Lovely!']);
+};
+
 export const encourageLine = (detail: string): string =>
   pick([
     `Wow, you read ${detail} perfectly! Your reading voice is getting so strong.`,

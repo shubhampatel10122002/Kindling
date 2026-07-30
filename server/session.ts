@@ -4,6 +4,7 @@ import { query, one } from '../lib/db';
 import { Narrator, type NarratorMode, type NarratorTurn } from '../lib/llm/narrator';
 import { classifyIntent } from '../lib/llm/intent';
 import { generateSessionPlan, fallbackPlan } from '../lib/llm/planner';
+import { generateAcknowledgment } from '../lib/llm/acknowledge';
 import { pickTargets } from '../lib/pedagogy';
 import { pickPraiseWord } from '../lib/praise';
 import * as T from '../lib/templates';
@@ -305,9 +306,15 @@ export class Session {
     context: string,
     prefetched?: NarratorTurn,
     mustMention?: string | null,
+    speakPrefix?: string | null,
   ) {
     this.setMode('NARRATE');
     const turn = prefetched ?? (await this.narrator.turn(mode, context, { mustMention }));
+
+    // Prepend rather than speak separately: one Cartesia context instead of two
+    // (the free tier allows 2 concurrent), and it reads as a single natural
+    // utterance rather than two clips butted together.
+    if (speakPrefix) turn.speak_text = `${speakPrefix} ${turn.speak_text}`;
     this.beatIndex = turn.current_beat_index ?? this.beatIndex;
     this.debug('lastNarratorTurn', { mode, ...turn });
 
@@ -388,12 +395,31 @@ export class Session {
       await this.end('story complete');
       return;
     }
+
+    // A short acknowledgment before the story continues, so the child's turn
+    // does not cut straight to narration. It has to be generated here rather
+    // than baked into the buffered beat: the buffer is prefetched while the
+    // child is still reading, so it cannot know how the reading went.
+    //
+    // Kicked off alongside the beat so the two overlap — when the beat is
+    // already buffered this is the only thing on the critical path, and Haiku
+    // keeps it to roughly a second.
+    const ackPromise = this.tracker
+      ? generateAcknowledgment({ childName: this.child.name, words: this.tracker.words })
+      : Promise.resolve(null);
+
     const buffered = this.bufferedTurn ? await this.bufferedTurn.catch(() => null) : null;
     this.discardBuffer();
+
+    const ack = await ackPromise;
+    if (ack) this.debug('lastAck', { text: ack.text, band: ack.quality.band, source: ack.source });
+
     await this.narrate(
       'NEXT_BEAT',
       `Advance to beat ${this.beatIndex + 1}.`,
       buffered ?? undefined,
+      null,
+      ack?.text ?? null,
     );
   }
 
