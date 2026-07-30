@@ -68,6 +68,29 @@ The state machine passes a `NarratorMode` plus free-text context. Modes:
 Always restate difficulty, target skills, and must-use words in the context
 string so the model cannot quietly drop them.
 
+## Never ask the narrator to recall a fact
+
+If deterministic code already knows something, tell the narrator — do not ask it
+to remember. Its context is full of plausible-but-wrong alternatives (the plan's
+`must_use_words`, skill example words, earlier passages) and it will reach for
+one. A real session praised **"glad"** — the canonical `blend_gl` example word —
+after the child read **"glides"**.
+
+`turn()` takes a `mustMention` option for this:
+
+```ts
+const praiseWord = pickPraiseWord(tracker.words);   // lib/praise.ts, pure
+await narrator.turn('ENCOURAGE', context, { mustMention: praiseWord });
+```
+
+It adds a HARD CONSTRAINT line to the prompt, then **verifies in code** that the
+word appears (`mentionsWord`, word-boundary matched so "glide" fails for
+"glides"). One retry with a correction; still wrong and it falls back to
+`T.encourageLine(word)`, which is a template that cannot get the word wrong.
+
+Same principle as moving `vocab_constraints` out of the safety rubric: anything
+checkable belongs in TypeScript.
+
 ## Safety pass
 
 Before **any** text reaches TTS, `lib/llm/safety.ts` runs a Haiku yes/no rubric

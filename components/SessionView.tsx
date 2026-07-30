@@ -38,6 +38,35 @@ export default function SessionView() {
   const engineRef = useRef<AudioEngine | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const gateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Caption updates waiting for the previous utterance to finish playing. */
+  const captionTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /**
+   * Apply a caption change only once the audio already queued has played out.
+   *
+   * A `speak` message arrives just *before* its own audio streams, so whatever is
+   * still queued at that moment is precisely the tail of the previous utterance.
+   * Delaying by that much keeps text and voice roughly together without needing
+   * word-level timing.
+   */
+  const afterCurrentAudio = useCallback((fn: () => void) => {
+    const delay = engineRef.current?.playbackRemainingMs() ?? 0;
+    if (delay < 120) {
+      fn();
+      return;
+    }
+    const timer = setTimeout(() => {
+      captionTimers.current = captionTimers.current.filter((t) => t !== timer);
+      fn();
+    }, delay);
+    captionTimers.current.push(timer);
+  }, []);
+
+  /** Barge-in and teardown must not leave stale captions queued. */
+  const flushCaptions = useCallback(() => {
+    for (const t of captionTimers.current) clearTimeout(t);
+    captionTimers.current = [];
+  }, []);
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     switch (msg.t) {
@@ -50,13 +79,18 @@ export default function SessionView() {
         break;
 
       case 'speak':
-        setNarratorText(msg.text);
+        // Hold the caption until the previous utterance has finished out loud.
+        afterCurrentAudio(() => setNarratorText(msg.text));
         setTranscript((t) => [...t, { kind: 'narrator', text: msg.text }]);
         break;
 
       case 'passage':
-        setWords(msg.words.map((w) => ({ word: w, status: 'pending', score: null })));
-        setCursor(0);
+        // The server sends this once it has finished *sending* audio, which is
+        // before the browser has finished playing it. Same treatment.
+        afterCurrentAudio(() => {
+          setWords(msg.words.map((w) => ({ word: w, status: 'pending', score: null })));
+          setCursor(0);
+        });
         setTranscript((t) => [...t, { kind: 'passage', text: msg.text }]);
         break;
 
@@ -122,7 +156,9 @@ export default function SessionView() {
         setMode('END');
         break;
     }
-  }, []);
+    // afterCurrentAudio is stable, but declare it: an empty dep array here is
+    // exactly the stale-closure shape that silently broke audio once already.
+  }, [afterCurrentAudio]);
 
   const connect = useCallback(
     (engine: AudioEngine) => {
@@ -169,7 +205,9 @@ export default function SessionView() {
   };
 
   function pressTalk() {
-    // Barge-in: kill local playback the instant the button goes down.
+    // Barge-in: kill local playback the instant the button goes down, and drop
+    // any caption still waiting on audio that will now never play.
+    flushCaptions();
     engineRef.current?.stopPlayback();
     engineRef.current?.setMuted(false);
     setSpeaking(false);
@@ -186,10 +224,11 @@ export default function SessionView() {
   useEffect(() => {
     return () => {
       if (gateTimer.current) clearTimeout(gateTimer.current);
+      flushCaptions();
       wsRef.current?.close();
       void engineRef.current?.destroy();
     };
-  }, []);
+  }, [flushCaptions]);
 
   if (!micReady) return <MicCheck onReady={onMicReady} />;
 

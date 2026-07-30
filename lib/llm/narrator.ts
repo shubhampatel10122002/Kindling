@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { model } from './client';
 import { runSafetyPass } from './safety';
 import { checkVocab } from '../vocab';
+import { mentionsWord } from '../praise';
 import * as T from '../templates';
 import type { Child, ChildMemory, SessionPlan } from '../types';
 
@@ -129,11 +130,20 @@ export class Narrator {
     this.system = buildSystemPrompt({ child: this.child, memory: this.memory, plan });
   }
 
-  async turn(mode: NarratorMode, context: string): Promise<NarratorTurn> {
+  async turn(
+    mode: NarratorMode,
+    context: string,
+    opts: { mustMention?: string | null } = {},
+  ): Promise<NarratorTurn> {
+    const mustMention = opts.mustMention?.trim() || null;
+
     const userMessage = [
       `MODE: ${mode}`,
       MODE_INSTRUCTIONS[mode],
       context ? `\nCONTEXT: ${context}` : '',
+      mustMention
+        ? `\nHARD CONSTRAINT: the child read the word "${mustMention}". Praise that exact word, spelled exactly that way. Do NOT name any other word the child read, and do NOT substitute a similar-looking word — you have other words in your context that the child did not read.`
+        : '',
     ].join('\n');
 
     const attempt = async (extra?: string): Promise<NarratorTurn> => {
@@ -160,13 +170,26 @@ export class Narrator {
     // Objective constraints first — arithmetic, not an LLM judgment call.
     const vocab = checkVocab(turn.child_passage, this.plan.vocab_constraints);
 
+    // Did it praise the word the child actually read? Checked in code, because
+    // the model reaching for a similar word from its context is the exact
+    // failure this constraint exists to prevent.
+    const wrongWord = mustMention !== null && !mentionsWord(turn.speak_text, mustMention);
+
     // Then the fuzzy safety judgments. Run in parallel with nothing else; this is
     // the only LLM call in the hot path besides the narrator itself.
     let verdict = await runSafetyPass({ turn, plan: this.plan, mode });
 
-    const needsRetry = !verdict.ok || !vocab.ok;
+    const needsRetry = !verdict.ok || !vocab.ok || wrongWord;
     if (needsRetry) {
-      const why = [verdict.ok ? '' : verdict.reason, vocab.feedback].filter(Boolean).join(' ');
+      const why = [
+        verdict.ok ? '' : verdict.reason,
+        vocab.feedback,
+        wrongWord
+          ? `You praised a word the child did not read. The only word you may name is "${mustMention}".`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
       console.warn(`[narrator] retrying (${verdict.severity}): ${why}`);
       try {
         const retry = await attempt(`Your previous draft had a problem: ${why} Fix it and try again.`);
@@ -177,6 +200,20 @@ export class Narrator {
           console.error('[narrator] hard safety failure twice, using template:', retryVerdict.reason);
           return this.fallback(mode);
         }
+
+        // Still crediting the wrong word after being told twice? Do not let it
+        // reach the child — a template that names the right word is strictly
+        // better than fluent praise for something they never said.
+        if (mustMention !== null && !mentionsWord(retry.speak_text, mustMention)) {
+          console.error(
+            `[narrator] still praising the wrong word after a retry; using template for "${mustMention}"`,
+          );
+          return {
+            ...retry,
+            speak_text: T.encourageLine(`"${mustMention}"`),
+          };
+        }
+
         // Otherwise take the retry. A slightly long sentence is better pedagogy
         // than the fallback template, and the child hears a real story.
         turn = retry;
@@ -185,6 +222,9 @@ export class Narrator {
         console.error('[narrator] regeneration failed, keeping first draft', err);
         // Only refuse the first draft if it was a hard safety failure.
         if (verdict.severity === 'hard') return this.fallback(mode);
+        if (wrongWord && mustMention !== null) {
+          return { ...turn, speak_text: T.encourageLine(`"${mustMention}"`) };
+        }
       }
     }
 

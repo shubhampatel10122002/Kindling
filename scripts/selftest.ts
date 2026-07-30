@@ -12,6 +12,7 @@ import { updateMastery, pickTargets } from '../lib/pedagogy';
 import { skillsForWord, SKILLS } from '../lib/skills';
 import { AUDIO } from '../lib/env';
 import { floatPcmToWav } from '../lib/wav';
+import { pickPraiseWord, mentionsWord } from '../lib/praise';
 import type { WordAssessment } from '../lib/types';
 
 let passed = 0;
@@ -299,6 +300,55 @@ console.log('\nAudio framing');
   ok('TTS rate is 44.1kHz for Web Audio', AUDIO.ttsSampleRate === 44100);
   ok('half-duplex tail is 300ms', AUDIO.gateTailMs === 300);
   ok('tokenizer drops pure punctuation', tokenize('Hi -- there!').length === 2);
+}
+
+// --------------------------------------------------------------------------
+console.log('\nPraise word selection (never credit an unspoken word)');
+// --------------------------------------------------------------------------
+{
+  // The reported failure: child read "The frog glides and hops.", narrator
+  // praised "glad" — a blend_gl example word sitting in its plan context.
+  const t = new PassageTracker('The frog glides and hops.');
+  t.ingest([
+    word('The', 96),
+    word('frog', 88),
+    word('glides', 93),
+    word('and', 95),
+    word('hops', 90),
+  ]);
+
+  const picked = pickPraiseWord(t.words);
+  ok('picks a word actually in the passage', picked !== null && /^(frog|glides|hops)$/.test(picked!), String(picked));
+  ok('picks the highest-scoring substantive word', picked === 'glides', String(picked));
+  ok('never picks a trivial sight word', picked !== 'The' && picked !== 'and');
+
+  ok('mentionsWord accepts the exact word', mentionsWord('You read glides so smoothly!', 'glides'));
+  ok('mentionsWord rejects the hallucinated word', !mentionsWord('You read glad so smoothly!', 'glides'));
+  ok('mentionsWord is not fooled by a prefix', !mentionsWord('You read glide well', 'glides'));
+  ok('mentionsWord ignores case', mentionsWord('GLIDES was great', 'glides'));
+  ok('mentionsWord tolerates quoting', mentionsWord('You read "glides" well', 'glides'));
+}
+{
+  // A coached word is not praiseworthy — it took more than one attempt.
+  const t = new PassageTracker('The dragon roared loudly.');
+  t.ingest([word('The', 95)]);
+  t.ingest([word('dragon', 30, 'Mispronunciation', [{ phoneme: 'd', accuracyScore: 10 }])]);
+  t.ingest([word('dragon', 91)]);
+  t.ingest([word('roared', 94), word('loudly', 92)]);
+  const picked = pickPraiseWord(t.words);
+  ok('skips a word that needed coaching', picked !== 'dragon', String(picked));
+  ok('still returns a real word', picked === 'roared' || picked === 'loudly', String(picked));
+}
+{
+  // Punctuation must not reach the narrator as part of the word.
+  const t = new PassageTracker('Blue went home.');
+  t.ingest([word('Blue', 90), word('went', 92), word('home', 97)]);
+  ok('strips trailing punctuation', pickPraiseWord(t.words) === 'home', String(pickPraiseWord(t.words)));
+}
+{
+  // Nothing passed — must return null rather than invent something.
+  const t = new PassageTracker('Xylophone zebra.');
+  ok('returns null when nothing was read', pickPraiseWord(t.words) === null);
 }
 
 // --------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { Narrator, type NarratorMode, type NarratorTurn } from '../lib/llm/narra
 import { classifyIntent } from '../lib/llm/intent';
 import { generateSessionPlan, fallbackPlan } from '../lib/llm/planner';
 import { pickTargets } from '../lib/pedagogy';
+import { pickPraiseWord } from '../lib/praise';
 import * as T from '../lib/templates';
 import { PronunciationSession, TalkRecognizer } from './azure';
 import { tts, type SpeakHandle } from './cartesia';
@@ -299,9 +300,14 @@ export class Session {
   // NARRATE
   // -------------------------------------------------------------------------
 
-  private async narrate(mode: NarratorMode, context: string, prefetched?: NarratorTurn) {
+  private async narrate(
+    mode: NarratorMode,
+    context: string,
+    prefetched?: NarratorTurn,
+    mustMention?: string | null,
+  ) {
     this.setMode('NARRATE');
-    const turn = prefetched ?? (await this.narrator.turn(mode, context));
+    const turn = prefetched ?? (await this.narrator.turn(mode, context, { mustMention }));
     this.beatIndex = turn.current_beat_index ?? this.beatIndex;
     this.debug('lastNarratorTurn', { mode, ...turn });
 
@@ -488,15 +494,18 @@ export class Session {
       this.strongPassages = 0;
       this.discardBuffer();
       this.setMode('ENCOURAGE', 'two strong passages');
-      const detail = this.tracker.words
-        .slice(0, 3)
-        .map((w) => `"${w.expected}"`)
-        .join(', ');
+
+      // Code picks the word, not the narrator. Asked to "name something
+      // specific", the model would reach for a plausible word from its context
+      // (a must_use_word, a skill example) instead of one the child said.
+      const praiseWord = pickPraiseWord(this.tracker.words);
+      this.debug('praiseWord', praiseWord);
+
       await this.narrate(
         'ENCOURAGE',
-        `They read two passages beautifully. Name something specific, for example the words ${detail}. Then continue to beat ${
-          this.beatIndex + 1
-        }.`,
+        `They read two passages beautifully. Then continue to beat ${this.beatIndex + 1}.`,
+        undefined,
+        praiseWord,
       );
       return;
     }

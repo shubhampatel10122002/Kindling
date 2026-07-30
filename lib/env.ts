@@ -42,9 +42,9 @@ export const env = {
 
 /** Models. Sonnet for anything the child hears; Haiku for classification + safety. */
 export const MODELS = {
-  narrator: 'claude-sonnet-4-6',
-  planner: 'claude-sonnet-4-6',
-  consolidate: 'claude-sonnet-4-6',
+  narrator: 'claude-sonnet-5',
+  planner: 'claude-sonnet-5',
+  consolidate: 'claude-sonnet-5',
   intent: 'claude-haiku-4-5',
   safety: 'claude-haiku-4-5',
 } as const;
