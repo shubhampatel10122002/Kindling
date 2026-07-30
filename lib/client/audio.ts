@@ -22,6 +22,8 @@ export class AudioEngine {
 
   private playHead = 0;
   private scheduled: AudioBufferSourceNode[] = [];
+  private destroyed = false;
+  private warnedAfterDestroy = false;
 
   onAudioFrame: ((pcm: ArrayBuffer) => void) | null = null;
   onLevel: ((rms: number) => void) | null = null;
@@ -78,7 +80,25 @@ export class AudioEngine {
 
   /** Queue one float32 PCM chunk from the server for gapless playback. */
   playChunk(pcm: ArrayBuffer) {
-    if (!this.ctx) return;
+    // Never fail silently here. A destroyed engine used to swallow every chunk
+    // without a trace, which is indistinguishable from "the app is broken".
+    if (this.destroyed) {
+      if (!this.warnedAfterDestroy) {
+        this.warnedAfterDestroy = true;
+        console.error(
+          '[audio] received TTS audio after the engine was destroyed — nothing will play. ' +
+            'Something tore down the AudioEngine while the session was still using it.',
+        );
+      }
+      return;
+    }
+    if (!this.ctx) {
+      if (!this.warnedAfterDestroy) {
+        this.warnedAfterDestroy = true;
+        console.error('[audio] no AudioContext — call init() before playing audio.');
+      }
+      return;
+    }
 
     // A backgrounded tab or an OS audio-device change can suspend the context
     // after it was unlocked. Scheduled sources then play into silence with no
@@ -133,6 +153,7 @@ export class AudioEngine {
   }
 
   async destroy() {
+    this.destroyed = true;
     this.stopPlayback();
     this.node?.port.close();
     this.node?.disconnect();

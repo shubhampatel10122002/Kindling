@@ -11,6 +11,7 @@ import { applyLeniency } from '../lib/leniency';
 import { updateMastery, pickTargets } from '../lib/pedagogy';
 import { skillsForWord, SKILLS } from '../lib/skills';
 import { AUDIO } from '../lib/env';
+import { floatPcmToWav } from '../lib/wav';
 import type { WordAssessment } from '../lib/types';
 
 let passed = 0;
@@ -298,6 +299,37 @@ console.log('\nAudio framing');
   ok('TTS rate is 44.1kHz for Web Audio', AUDIO.ttsSampleRate === 44100);
   ok('half-duplex tail is 300ms', AUDIO.gateTailMs === 300);
   ok('tokenizer drops pure punctuation', tokenize('Hi -- there!').length === 2);
+}
+
+// --------------------------------------------------------------------------
+console.log('\nWAV encoding (audio-check isolation path)');
+// --------------------------------------------------------------------------
+{
+  // One second of 440Hz at 44.1kHz as float32 LE, the shape Cartesia streams.
+  const n = 44100;
+  const pcm = Buffer.alloc(n * 4);
+  for (let i = 0; i < n; i++) pcm.writeFloatLE(Math.sin((2 * Math.PI * 440 * i) / n) * 0.5, i * 4);
+
+  const wav = floatPcmToWav(pcm, 44100);
+
+  ok('RIFF magic', wav.toString('ascii', 0, 4) === 'RIFF');
+  ok('WAVE magic', wav.toString('ascii', 8, 12) === 'WAVE');
+  ok('format is PCM (1)', wav.readUInt16LE(20) === 1);
+  ok('mono', wav.readUInt16LE(22) === 1);
+  ok('sample rate 44100', wav.readUInt32LE(24) === 44100);
+  ok('16 bits per sample', wav.readUInt16LE(34) === 16);
+  ok('byte rate matches', wav.readUInt32LE(28) === 44100 * 2);
+  ok('block align matches', wav.readUInt16LE(32) === 2);
+  ok('data chunk size matches sample count', wav.readUInt32LE(40) === n * 2);
+  ok('total length = 44 + data', wav.length === 44 + n * 2);
+  ok('RIFF size field = length - 8', wav.readUInt32LE(4) === wav.length - 8);
+  // Clipping must saturate, not wrap around to the opposite sign.
+  const loud = Buffer.alloc(8);
+  loud.writeFloatLE(2.5, 0);
+  loud.writeFloatLE(-2.5, 4);
+  const clipped = floatPcmToWav(loud, 44100);
+  ok('positive clipping saturates', clipped.readInt16LE(44) === 32767, String(clipped.readInt16LE(44)));
+  ok('negative clipping saturates', clipped.readInt16LE(46) === -32768, String(clipped.readInt16LE(46)));
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

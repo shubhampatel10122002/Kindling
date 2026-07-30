@@ -44,6 +44,8 @@ export class Session {
   private speaking: SpeakHandle | null = null;
   private gateOpenAt = 0; // mic frames before this timestamp are dropped
   private isSpeaking = false;
+  /** Tail of the utterance queue — see speak(). */
+  private speechChain: Promise<void> = Promise.resolve();
 
   private transcript: TranscriptEntry[] = [];
   private interestSignals: string[] = [];
@@ -218,8 +220,26 @@ export class Session {
   // Speaking (half-duplex)
   // -------------------------------------------------------------------------
 
+  /**
+   * Serialise speech. Two utterances must never overlap: the narrator would talk
+   * over itself, and Cartesia's free tier caps concurrent contexts at 2 — which
+   * is exactly the "concurrency limit of 2" error a nudge firing mid-utterance
+   * (or a Test-sound click during a story beat) produces.
+   */
   private async speak(text: string): Promise<void> {
-    if (!text.trim()) return;
+    const previous = this.speechChain;
+    let release!: () => void;
+    this.speechChain = new Promise<void>((r) => (release = r));
+    try {
+      await previous;
+      await this.speakNow(text);
+    } finally {
+      release();
+    }
+  }
+
+  private async speakNow(text: string): Promise<void> {
+    if (!text.trim() || this.closed) return;
 
     this.isSpeaking = true;
     this.gateOpenAt = Number.MAX_SAFE_INTEGER; // close the gate for the whole utterance

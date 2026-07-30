@@ -132,6 +132,18 @@ export class CartesiaTTS {
         this.active.set(contextId, { onChunk, resolve, cancelled: false });
       });
 
+      // Safety net: if a 'done' never arrives (e.g. an error frame without a
+      // context_id), the caller must still be released or the session wedges.
+      const watchdog = setTimeout(() => {
+        if (this.active.has(contextId)) {
+          console.error(`[cartesia] no 'done' for context ${contextId} after 30s — releasing`);
+          const entry = this.active.get(contextId);
+          this.active.delete(contextId);
+          entry?.resolve();
+        }
+      }, 30_000);
+      void finished.then(() => clearTimeout(watchdog));
+
       ws.send(
         JSON.stringify({
           model_id: env.cartesiaModel,

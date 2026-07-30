@@ -19,12 +19,19 @@ export default function MicCheck({ onReady }: { onReady: (engine: AudioEngine) =
   const [error, setError] = useState<string>('');
   const engineRef = useRef<AudioEngine | null>(null);
   const loudTicks = useRef(0);
+  /**
+   * Set the moment the engine is handed to the session. This MUST be a ref, not
+   * state: the unmount cleanup below closes over its scope once, so reading
+   * `state` there would see the value from the first render ('idle') and tear
+   * down the live AudioContext and mic stream the session had just taken
+   * ownership of — silent playback and a dead microphone, with no error anywhere.
+   */
+  const handedOff = useRef(false);
 
   useEffect(() => {
     return () => {
-      if (state !== 'passed') void engineRef.current?.destroy();
+      if (!handedOff.current) void engineRef.current?.destroy();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function begin() {
@@ -62,7 +69,9 @@ export default function MicCheck({ onReady }: { onReady: (engine: AudioEngine) =
 
   function start() {
     const engine = engineRef.current;
-    if (engine) onReady(engine);
+    if (!engine) return;
+    handedOff.current = true; // the session owns the engine from here on
+    onReady(engine);
   }
 
   return (
@@ -103,6 +112,11 @@ export default function MicCheck({ onReady }: { onReady: (engine: AudioEngine) =
             <button className="btn btn-primary" onClick={start}>
               Start the story
             </button>
+            <div style={{ marginTop: 18 }}>
+              <a href="/audio-test" className="muted" style={{ fontSize: 14 }}>
+                Can&rsquo;t hear Ollie? Run the audio check →
+              </a>
+            </div>
           </>
         )}
 
