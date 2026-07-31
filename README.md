@@ -99,6 +99,9 @@ utterance, which is what to reach for if a word ever lights up that was not spok
    around what she told you.
 8. Open **/parent** to see the whole journey: progress, words that stopped being
    hard, words that haven't, the question jar, and everything she has shared.
+9. **Start over** at the bottom of /parent erases the child completely — type her
+   name to confirm — and the next session opens with onboarding, as if Ollie had
+   never met anyone. Useful for demoing the first-run experience twice.
 
 The right-hand panel is the demo. It shows live mode, the last Azure per-word
 scores, the current plan, the memory model, parent flags, and the memory diff.

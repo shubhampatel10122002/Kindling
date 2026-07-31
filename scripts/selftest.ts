@@ -288,7 +288,14 @@ console.log('\nWord detection hardening (words must not light up unspoken)');
 console.log('\nSession opening (time of day, time since last session)');
 // --------------------------------------------------------------------------
 {
-  ok('never met her → onboarding', planOpening({ hoursSinceLast: null, localHour: 9 }).shape === 'first_time');
+  // Whether to onboard is decided by whether a child row exists, not here. A
+  // null gap means we know her but have never read together — the seeded demo
+  // child, and anyone whose first session ended before it saved. She still gets
+  // asked something.
+  const firstStory = planOpening({ hoursSinceLast: null, localHour: 9, rand: 0 });
+  ok('no history yet → the first-story opening', firstStory.shape === 'first_story', firstStory.shape);
+  ok('she is still asked something', firstStory.question.length > 0, firstStory.question);
+  ok('and given room to answer', firstStory.maxTurns > 0);
 
   const quick = planOpening({ hoursSinceLast: 1, localHour: 15, rand: 0 });
   ok('back within the hour → quick return', quick.shape === 'quick_return');

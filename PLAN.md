@@ -109,7 +109,7 @@ Runs on the WebSocket server. Deterministic code picks the mode; the LLM writes 
 
 | Mode | Trigger to enter | What happens |
 |---|---|---|
-| ONBOARDING | No child in the database | Ollie asks her name and one thing she likes, a grown-up confirms the spelling, then he writes. No placement test, ever. |
+| ONBOARDING | No child in the database | Ollie asks her name and one thing she likes, a grown-up confirms the spelling, then he writes. No placement test, ever. Onboarding replaces the doorway — she has already talked. |
 | DOORWAY | Session start, for a child we have met | One question chosen by `lib/opening.ts` from the local time and the gap since her last session. She talks; everything is absorbed and nothing is discussed. |
 | NARRATE | Session start, or child finished a passage | Narrator produces next story beat (2-3 spoken sentences) + the child's next passage (1-2 sentences). TTS speaks the beat. Mic is muted during playback. |
 | CHILD_READS | Narrator hands over | Mic streams to Azure Pronunciation Assessment with the passage as referenceText. Tracker follows word by word. |
@@ -300,6 +300,7 @@ In CHILD_READS, audio matching nothing in the reference text is ignored — not 
 - `GET /api/plan` — next session plan
 - `POST /api/child` — create/edit the demo child + onboarding notes
 - `GET /api/parent` — everything the parent view shows (read-only)
+- `POST /api/reset` — forget a child entirely, so the next session onboards. Requires her name as confirmation; there is no undo.
 
 ---
 

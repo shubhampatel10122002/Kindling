@@ -149,6 +149,55 @@ export async function getDemoChild() {
 }
 
 /**
+ * Forget a child completely, so the next session opens with onboarding.
+ *
+ * This deletes the child row rather than blanking her memory, because
+ * onboarding starts by asking her name — and a child row that still exists is
+ * exactly what tells the session it has met her before. Everything that
+ * references her goes with it.
+ *
+ * One transaction: a half-erased child is worse than either outcome, and
+ * `reading_events` is append-only precisely so nothing else is allowed to
+ * delete from it piecemeal.
+ */
+export async function resetChild(childId: string): Promise<Record<string, number>> {
+  // Children first would violate every foreign key pointing at her, so this
+  // order is leaf-to-root and is not arbitrary.
+  const steps: [string, string][] = [
+    ['reading_events', 'DELETE FROM reading_events WHERE child_id = $1'],
+    [
+      'session_flags',
+      'DELETE FROM session_flags WHERE session_id IN (SELECT id FROM sessions WHERE child_id = $1)',
+    ],
+    ['child_notes', 'DELETE FROM child_notes WHERE child_id = $1'],
+    ['next_plans', 'DELETE FROM next_plans WHERE child_id = $1'],
+    ['consolidation_state', 'DELETE FROM consolidation_state WHERE child_id = $1'],
+    ['skill_mastery', 'DELETE FROM skill_mastery WHERE child_id = $1'],
+    ['child_memory_history', 'DELETE FROM child_memory_history WHERE child_id = $1'],
+    ['child_memory', 'DELETE FROM child_memory WHERE child_id = $1'],
+    ['sessions', 'DELETE FROM sessions WHERE child_id = $1'],
+    ['children', 'DELETE FROM children WHERE id = $1'],
+  ];
+
+  const client = await pool.connect();
+  const deleted: Record<string, number> = {};
+  try {
+    await client.query('BEGIN');
+    for (const [table, sql] of steps) {
+      const res = await client.query(sql, [childId]);
+      deleted[table] = res.rowCount ?? 0;
+    }
+    await client.query('COMMIT');
+    return deleted;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw explain(err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Create a child with everything a first session needs: a cold-start mastery
  * profile, empty memory, and a consolidation watermark.
  *

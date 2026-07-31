@@ -13,8 +13,8 @@
  */
 
 export type OpeningShape =
-  /** Never met her. Onboarding handles this one. */
-  | 'first_time'
+  /** We know her name but have never read together. There is no "last time" yet. */
+  | 'first_story'
   /** She was here within the last few hours. Barely ask; she has nothing new. */
   | 'quick_return'
   /** Earlier today. */
@@ -45,6 +45,12 @@ export function dayPart(localHour: number): 'morning' | 'afternoon' | 'evening' 
   if (localHour < 17) return 'afternoon';
   return 'evening';
 }
+
+const FIRST_STORY = [
+  "I've been looking forward to this. Anything you want to tell me before we start?",
+  'Our first story together! Tell me something about you first.',
+  "Before we start — is there anything you want me to know?",
+];
 
 const QUICK_RETURN = [
   'Back already! Anything you want to tell me, or should we jump straight in?',
@@ -83,7 +89,13 @@ const LONG_GAP = [
 ];
 
 /**
- * Pick the opening. `hoursSinceLast` is null when we have never met her.
+ * Pick the opening for a child we have already met.
+ *
+ * Whether to onboard at all is not this table's decision — that is settled by
+ * whether a child row exists. `hoursSinceLast` is null when she has a profile
+ * but no session history yet, which is a real state: the seeded demo child, and
+ * anyone whose first session ended before it saved.
+ *
  * `rand` is injectable so the self-test can pin a variant.
  */
 export function planOpening(args: {
@@ -95,7 +107,12 @@ export function planOpening(args: {
   const rand = args.rand ?? Math.random();
 
   if (hoursSinceLast === null) {
-    return { shape: 'first_time', question: '', doorwayMs: 0, maxTurns: 0 };
+    return {
+      shape: 'first_story',
+      question: pick(FIRST_STORY, rand),
+      doorwayMs: 45_000,
+      maxTurns: 2,
+    };
   }
 
   // Came back within a few hours. She has nothing new to report and asking

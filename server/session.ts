@@ -146,15 +146,16 @@ export class Session {
   async start(localHour?: number) {
     this.tick = setInterval(() => this.onTick(), 500);
 
+    // Onboarding and the doorway are the same beat of the session — a minute of
+    // her talking before any reading — so she only ever gets one of them.
+    // Onboarding already asked her name and what she likes.
     if (this.isNewChild) {
       await this.onboard();
       if (this.closed || !this.child) return;
+    } else {
+      await this.doorway(localHour);
+      if (this.closed) return;
     }
-
-    // The doorway: one question, then she talks and we absorb. It runs before
-    // any planning so the plan can be built from what she just said.
-    const opening = await this.doorway(localHour);
-    if (this.closed) return;
 
     // Speak a template line FIRST, with no LLM in the way. Planning plus the
     // opening narrator turn is several seconds of round-trips; a child staring at
@@ -162,7 +163,7 @@ export class Session {
     // very first thing that happens in a session exercises the whole audio path.
     this.setMode('NARRATE', 'greeting');
     const greeting = this.speak(
-      opening.shape === 'first_time' ? T.onboardingWriting(this.child.name) : T.writingLine(),
+      this.isNewChild ? T.onboardingWriting(this.child.name) : T.writingLine(),
     );
 
     // Resolve the plan while that is playing.
@@ -281,12 +282,10 @@ export class Session {
    * hour later should not be met with "how was your day?" for the second time.
    */
   private async doorway(localHour?: number): Promise<OpeningPlan> {
-    const hoursSinceLast = this.isNewChild ? null : await this.hoursSinceLastSession();
+    const hoursSinceLast = await this.hoursSinceLastSession();
     const hour = typeof localHour === 'number' ? localHour : new Date().getHours();
     const opening = planOpening({ hoursSinceLast, localHour: hour });
     this.debug('opening', { ...opening, hoursSinceLast, localHour: hour });
-
-    if (opening.shape === 'first_time') return opening;
 
     this.setMode('DOORWAY', opening.shape);
 

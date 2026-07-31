@@ -752,3 +752,26 @@ button {
   height: 100%;
   background: linear-gradient(90deg, var(--good), var(--accent));
 }
+
+/* ---------- start over (destructive, so it looks it) ---------- */
+
+.parent-card.danger {
+  border-color: #f0cdc5;
+  background: #fffaf9;
+}
+
+.btn-danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  border-color: #b04d39;
+  background: #b04d39;
+}
+
+.btn-danger:disabled:hover {
+  background: var(--bad);
+  border-color: var(--bad);
+}

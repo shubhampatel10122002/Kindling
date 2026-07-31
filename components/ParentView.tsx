@@ -48,6 +48,10 @@ function when(iso: string) {
 export default function ParentView() {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [confirmName, setConfirmName] = useState('');
+  const [resetDone, setResetDone] = useState(false);
+  const [resetError, setResetError] = useState('');
 
   useEffect(() => {
     fetch('/api/parent')
@@ -56,8 +60,45 @@ export default function ParentView() {
       .catch((e) => setError(String(e)));
   }, []);
 
+  async function doReset() {
+    setResetError('');
+    try {
+      const res = await fetch('/api/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmName }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setResetError(body.error ?? 'Reset failed.');
+        return;
+      }
+      setResetDone(true);
+    } catch (e) {
+      setResetError(String(e));
+    }
+  }
+
   if (error) return <main className="parent"><p className="muted">{error}</p></main>;
   if (!data) return <main className="parent"><p className="muted">Loading…</p></main>;
+
+  if (resetDone) {
+    return (
+      <main className="parent">
+        <h1>All forgotten</h1>
+        <p className="muted">
+          Ollie has no memory of anyone now. The next time the app is opened he will introduce
+          himself and ask for a name, the same as the very first time.
+        </p>
+        <p style={{ marginTop: 20 }}>
+          <a className="btn btn-primary" href="/">
+            Start over
+          </a>
+        </p>
+      </main>
+    );
+  }
+
   if (!data.child) {
     return (
       <main className="parent">
@@ -240,6 +281,61 @@ export default function ParentView() {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section className="parent-card danger">
+        <h2>Start over</h2>
+        <p className="muted">
+          Erases everything Ollie knows about {child.name} — her reading history, the words she
+          has learned, what she has told him, and every story so far. He will introduce himself
+          and ask for a name again, as if they had never met. This cannot be undone.
+        </p>
+
+        {!resetting ? (
+          <button className="btn btn-danger" style={{ marginTop: 14 }} onClick={() => setResetting(true)}>
+            Reset {child.name}&rsquo;s profile
+          </button>
+        ) : (
+          <form
+            className="name-card"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void doReset();
+            }}
+          >
+            <input
+              autoFocus
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              placeholder={`Type “${child.name}” to confirm`}
+              aria-label="Confirm the child's name"
+            />
+            <button
+              className="btn btn-danger"
+              type="submit"
+              disabled={confirmName.trim().toLowerCase() !== child.name.trim().toLowerCase()}
+            >
+              Erase everything
+            </button>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => {
+                setResetting(false);
+                setConfirmName('');
+                setResetError('');
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        )}
+
+        {resetError && (
+          <p className="muted" style={{ marginTop: 10, color: 'var(--bad)' }}>
+            {resetError}
+          </p>
+        )}
       </section>
     </main>
   );
