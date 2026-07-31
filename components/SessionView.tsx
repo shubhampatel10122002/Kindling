@@ -36,6 +36,8 @@ export default function SessionView() {
   const [notebook, setNotebook] = useState<{ kind: string; subject: string }[]>([]);
   const [needName, setNeedName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
+  /** Connected, but the server never started the session. Says so, rather than spinning. */
+  const [stalled, setStalled] = useState(false);
   /** Bytes of TTS audio this browser actually received for the current utterance. */
   const [audioBytes, setAudioBytes] = useState(0);
 
@@ -252,6 +254,20 @@ export default function SessionView() {
     send({ t: 'talk_end' });
   }
 
+  /**
+   * The session should leave IDLE within a moment of connecting. If it does not,
+   * something upstream is wrong and an endless "Ollie is thinking…" is the least
+   * useful thing we could show — it looks identical to working correctly.
+   */
+  useEffect(() => {
+    if (!connected || mode !== 'IDLE') {
+      setStalled(false);
+      return;
+    }
+    const timer = setTimeout(() => setStalled(true), 10_000);
+    return () => clearTimeout(timer);
+  }, [connected, mode]);
+
   useEffect(() => {
     return () => {
       if (gateTimer.current) clearTimeout(gateTimer.current);
@@ -278,17 +294,19 @@ export default function SessionView() {
                 ? 'Ollie is speaking…'
                 : ended
                   ? 'all done'
-                  : mode === 'CHILD_READS'
-                    ? 'listening to you'
-                    : mode === 'TALK' || mode === 'DOORWAY' || mode === 'ONBOARDING'
-                      ? 'listening…'
-                      : mode === 'WRAP'
-                        ? 'one more?'
-                        : mode === 'PAUSED'
-                          ? 'paused'
-                          : // NARRATE / COACH / REMIX / ADAPT between utterances
-                            // all mean one thing: waiting on the LLM.
-                            'Ollie is thinking…'}
+                  : mode === 'IDLE'
+                    ? 'waking Ollie up…'
+                      : mode === 'CHILD_READS'
+                      ? 'listening to you'
+                      : mode === 'TALK' || mode === 'DOORWAY' || mode === 'ONBOARDING'
+                        ? 'listening…'
+                        : mode === 'WRAP'
+                          ? 'one more?'
+                          : mode === 'PAUSED'
+                            ? 'paused'
+                            : // NARRATE / COACH / REMIX / ADAPT between utterances
+                              // all mean one thing: waiting on the LLM.
+                              'Ollie is thinking…'}
           </div>
         </header>
 
@@ -296,6 +314,17 @@ export default function SessionView() {
           <div className="miccheck-error" style={{ marginBottom: 20 }}>
             <h3>Something went wrong</h3>
             <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{error}</p>
+          </div>
+        )}
+
+        {stalled && !error && (
+          <div className="miccheck-error" style={{ marginBottom: 20 }}>
+            <h3>Ollie hasn&rsquo;t woken up</h3>
+            <p style={{ margin: 0 }}>
+              The connection is open but the session never started. Check the terminal running{' '}
+              <b>npm run dev</b> — the session server logs the reason there. Reloading this page
+              usually fixes it.
+            </p>
           </div>
         )}
 
