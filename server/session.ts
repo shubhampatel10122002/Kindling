@@ -152,35 +152,53 @@ export class Session {
     if (this.isNewChild) {
       await this.onboard();
       if (this.closed || !this.child) return;
-    }
-
-    // Everything slow that does not depend on what she is about to say starts
-    // NOW and runs while she talks: the session plan, and the first story beat.
-    // The doorway buys us twenty to sixty seconds of wall clock, and spending it
-    // on round-trips she would otherwise sit through in silence is the single
-    // biggest thing we can do about "Ollie is thinking…".
-    const bootstrap = this.bootstrap();
-
-    if (!this.isNewChild) {
+    } else {
       await this.doorway(localHour);
       if (this.closed) return;
     }
 
-    // A template line, with no LLM in the way, so something is audible the
-    // instant the doorway closes.
+    // Speak a template line FIRST, with no LLM in the way. Planning plus the
+    // opening narrator turn is several seconds of round-trips; a child staring at
+    // a silent screen for that long assumes it is broken. This also means the
+    // very first thing that happens in a session exercises the whole audio path.
     this.setMode('NARRATE', 'greeting');
-    void this.speak(this.isNewChild ? T.onboardingWriting(this.child.name) : T.writingLine());
+    const greeting = this.speak(
+      this.isNewChild ? T.onboardingWriting(this.child.name) : T.writingLine(),
+    );
 
-    const { plan, narrator, opening } = await bootstrap;
+    // Resolve the plan while that is playing.
+    const planning = (async (): Promise<SessionPlan> => {
+      const stored = await one<{ plan: SessionPlan }>(
+        'SELECT plan FROM next_plans WHERE child_id = $1',
+        [this.child.id],
+      );
+      if (stored?.plan) return stored.plan;
+
+      const targets = pickTargets(this.mastery);
+      try {
+        return await generateSessionPlan({
+          child: this.child,
+          memory: this.memory,
+          mastery: this.mastery,
+          targetSkills: targets,
+        });
+      } catch (err) {
+        console.error('[session] planner failed, using fallback', err);
+        return fallbackPlan(this.child, targets);
+      }
+    })();
+
+    const [, plan] = await Promise.all([greeting, planning]);
     if (this.closed) return;
     this.plan = plan;
-    this.narrator = narrator;
 
     const row = await one<{ id: string }>(
       'INSERT INTO sessions (child_id, plan) VALUES ($1, $2) RETURNING id',
       [this.child.id, JSON.stringify(this.plan)],
     );
     this.sessionId = row!.id;
+
+    this.narrator = new Narrator(this.child, this.memory, this.plan);
 
     // Anything she told us in the doorway was held until there was a session row
     // to attach it to. It also may have quietly changed how long today runs.
@@ -190,67 +208,10 @@ export class Session {
     this.send({ t: 'ready', childName: this.child.name, plan: this.plan });
     this.debug('plan', this.plan);
 
-    // If she told us she was tired, the plan just changed underneath the beat we
-    // wrote in advance, so that beat is thrown away and written again.
-    const prefetched = this.moodApplied ? null : await opening;
-    this.debug('openingPrefetched', prefetched !== null);
-
     await this.narrate(
       'OPENING',
       `${this.child.name} has already been greeted out loud, so do not greet them again. Go straight into beat 0 of the story.`,
-      prefetched ?? undefined,
     );
-  }
-
-  /**
-   * The session's slow start, kicked off early and awaited late.
-   *
-   * Resolves the plan, builds the narrator, and starts writing beat 0 — all of
-   * it while the child is still answering the doorway question.
-   */
-  private bootstrap(): Promise<{
-    plan: SessionPlan;
-    narrator: Narrator;
-    opening: Promise<NarratorTurn | null>;
-  }> {
-    return (async () => {
-      const plan = await this.resolvePlan();
-      const narrator = new Narrator(this.child, this.memory, plan);
-      const opening = narrator
-        .turn(
-          'OPENING',
-          `${this.child.name} has already been greeted out loud, so do not greet them again. Go straight into beat 0 of the story.`,
-        )
-        .catch((err) => {
-          // Not fatal — start() falls back to generating it on the spot.
-          console.error('[session] could not pre-write the opening beat', err);
-          return null;
-        });
-      return { plan, narrator, opening };
-    })();
-  }
-
-  private async resolvePlan(): Promise<SessionPlan> {
-    const targets = pickTargets(this.mastery);
-    try {
-      // Consolidation usually left one ready, built around what she said last
-      // time. That is the fast path and the good one.
-      const stored = await one<{ plan: SessionPlan }>(
-        'SELECT plan FROM next_plans WHERE child_id = $1',
-        [this.child.id],
-      );
-      if (stored?.plan) return stored.plan;
-
-      return await generateSessionPlan({
-        child: this.child,
-        memory: this.memory,
-        mastery: this.mastery,
-        targetSkills: targets,
-      });
-    } catch (err) {
-      console.error('[session] planner failed, using fallback', err);
-      return fallbackPlan(this.child, targets);
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -321,12 +282,7 @@ export class Session {
    * hour later should not be met with "how was your day?" for the second time.
    */
   private async doorway(localHour?: number): Promise<OpeningPlan> {
-    // Both reads feed the same sentence, so they go together — this runs before
-    // the first thing she hears, and nothing else is happening yet.
-    const [hoursSinceLast, lastNote] = await Promise.all([
-      this.hoursSinceLastSession(),
-      this.lastNoteSubject(),
-    ]);
+    const hoursSinceLast = await this.hoursSinceLastSession();
     const hour = typeof localHour === 'number' ? localHour : new Date().getHours();
     const opening = planOpening({ hoursSinceLast, localHour: hour });
     this.debug('opening', { ...opening, hoursSinceLast, localHour: hour });
@@ -337,7 +293,7 @@ export class Session {
     // out loud — and say it in the same breath as the question, because two
     // clips butted together sound like two different thoughts.
     const remembered = rememberLine({
-      lastNoteSubject: lastNote,
+      lastNoteSubject: await this.lastNoteSubject(),
       openThread: this.memory.canon?.open_threads?.[0] ?? null,
     });
     await this.speak([remembered, opening.question].filter(Boolean).join(' '));
