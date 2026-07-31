@@ -32,6 +32,10 @@ export default function SessionView() {
   const [flags, setFlags] = useState<{ type: string; detail: string }[]>([]);
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState('');
+  /** What she has told Ollie this session, so she can see it was kept. */
+  const [notebook, setNotebook] = useState<{ kind: string; subject: string }[]>([]);
+  const [needName, setNeedName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
   /** Bytes of TTS audio this browser actually received for the current utterance. */
   const [audioBytes, setAudioBytes] = useState(0);
 
@@ -102,6 +106,30 @@ export default function SessionView() {
 
       case 'cursor':
         setCursor(msg.index);
+        // The authoritative cursor also cleans up: anything still showing as
+        // provisionally-heard from here on was never confirmed by a real score,
+        // so it goes back to unread rather than sitting half-lit forever.
+        setWords((ws) =>
+          ws.map((w, i) => (i >= msg.index && w.status === 'reading' ? { ...w, status: 'pending' } : w)),
+        );
+        break;
+
+      case 'heard':
+        // Provisional, from Azure's interim hypothesis. No score, no decisions —
+        // it just keeps the highlight with her voice instead of a second behind.
+        setWords((ws) =>
+          ws.map((w, i) => (i <= msg.index && w.status === 'pending' ? { ...w, status: 'reading' } : w)),
+        );
+        setCursor(msg.index + 1);
+        break;
+
+      case 'note':
+        setNotebook((n) => [{ kind: msg.kind, subject: msg.subject }, ...n]);
+        break;
+
+      case 'need_name':
+        setNameDraft(msg.heard ?? '');
+        setNeedName(true);
         break;
 
       case 'tts_start':
@@ -171,6 +199,9 @@ export default function SessionView() {
         engine.onAudioFrame = (pcm) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(pcm);
         };
+        // The server's clock is not the child's. How the session opens depends on
+        // what time it is where she is, so she tells it.
+        ws.send(JSON.stringify({ t: 'start', localHour: new Date().getHours() }));
       };
 
       ws.onmessage = (e) => {
@@ -249,13 +280,15 @@ export default function SessionView() {
                   ? 'all done'
                   : mode === 'CHILD_READS'
                     ? 'listening to you'
-                    : mode === 'TALK'
+                    : mode === 'TALK' || mode === 'DOORWAY' || mode === 'ONBOARDING'
                       ? 'listening…'
-                      : mode === 'PAUSED'
-                        ? 'paused'
-                        : // NARRATE / COACH / SOCRATIC / REMIX / ADAPT between
-                          // utterances all mean one thing: waiting on the LLM.
-                          'Ollie is thinking…'}
+                      : mode === 'WRAP'
+                        ? 'one more?'
+                        : mode === 'PAUSED'
+                          ? 'paused'
+                          : // NARRATE / COACH / REMIX / ADAPT between utterances
+                            // all mean one thing: waiting on the LLM.
+                            'Ollie is thinking…'}
           </div>
         </header>
 
@@ -271,7 +304,61 @@ export default function SessionView() {
           <span>{narratorText || 'Getting your story ready…'}</span>
         </div>
 
-        {mode === 'PAUSED' ? (
+        {needName ? (
+          <div>
+            <div className="passage-label">What&rsquo;s your name?</div>
+            <p className="empty-passage">
+              Grown-ups: check the spelling. Ollie uses this name in every story.
+            </p>
+            <form
+              className="name-card"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = nameDraft.trim();
+                if (!name) return;
+                send({ t: 'onboard_name', name });
+                setNeedName(false);
+              }}
+            >
+              <input
+                autoFocus
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Type your name"
+                aria-label="Child's name"
+              />
+              <button className="btn btn-primary" type="submit" disabled={!nameDraft.trim()}>
+                That&rsquo;s me!
+              </button>
+            </form>
+          </div>
+        ) : mode === 'DOORWAY' ? (
+          <div>
+            <div className="passage-label">Tell Ollie anything</div>
+            <p className="empty-passage">
+              {listening ? 'Ollie is listening…' : 'Ollie is thinking about what you said…'}
+            </p>
+            <button className="btn" onClick={() => send({ t: 'doorway_done' })}>
+              Let&rsquo;s just read
+            </button>
+          </div>
+        ) : mode === 'WRAP' ? (
+          <div>
+            <div className="passage-label">One more bit?</div>
+            <p className="empty-passage">{narratorText}</p>
+            <div className="choice-row">
+              <button
+                className="btn btn-primary"
+                onClick={() => send({ t: 'wrap_answer', more: true })}
+              >
+                Yes, one more!
+              </button>
+              <button className="btn" onClick={() => send({ t: 'wrap_answer', more: false })}>
+                That&rsquo;s enough for today
+              </button>
+            </div>
+          </div>
+        ) : mode === 'PAUSED' ? (
           <div>
             <div className="passage-label">Paused</div>
             <p className="empty-passage">Ollie is waiting for you.</p>
@@ -293,9 +380,26 @@ export default function SessionView() {
           </>
         )}
 
+        {notebook.length > 0 && (
+          // She sees what she told Ollie land somewhere. The ones that do not
+          // turn up in today's story are visibly queued, not quietly dropped.
+          <div className="notebook">
+            <div className="notebook-title">Ollie&rsquo;s notebook</div>
+            <ul>
+              {notebook.map((n, i) => (
+                <li key={i}>{n.subject}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <TalkButton
           listening={listening}
-          disabled={!connected || ended}
+          // In these modes Ollie is already listening with the mic open, so the
+          // owl has nothing to do — pressing it would open a second recognizer.
+          disabled={
+            !connected || ended || mode === 'DOORWAY' || mode === 'WRAP' || mode === 'ONBOARDING'
+          }
           onPress={pressTalk}
           onRelease={releaseTalk}
         />

@@ -94,10 +94,10 @@ Rule of the whole codebase: **deterministic code decides what happens; the LLM o
 
 See `db/schema.sql` for the authoritative version. Tables: `children`, `sessions`,
 `reading_events` (append-only), `skill_mastery`, `child_memory`,
-`child_memory_history`, `session_flags`, plus two implementation tables:
-`next_plans` (the plan consolidation prepares for the next session) and
-`consolidation_state` (a watermark so consolidation only folds in events it has
-not already seen).
+`child_memory_history`, `session_flags`, `child_notes` (everything the child
+volunteers — see §16), plus two implementation tables: `next_plans` (the plan
+consolidation prepares for the next session) and `consolidation_state` (a
+watermark so consolidation only folds in events it has not already seen).
 
 Skill list: ~30 skills hardcoded in `lib/skills.ts` (short vowels, common consonant blends, digraphs sh/ch/th/wh, 20 sight words). Each: id, description, example words, prerequisite skill ids.
 
@@ -109,18 +109,20 @@ Runs on the WebSocket server. Deterministic code picks the mode; the LLM writes 
 
 | Mode | Trigger to enter | What happens |
 |---|---|---|
+| ONBOARDING | No child in the database | Ollie asks her name and one thing she likes, a grown-up confirms the spelling, then he writes. No placement test, ever. Onboarding replaces the doorway — she has already talked. |
+| DOORWAY | Session start, for a child we have met | One question chosen by `lib/opening.ts` from the local time and the gap since her last session. She talks; everything is absorbed and nothing is discussed. |
 | NARRATE | Session start, or child finished a passage | Narrator produces next story beat (2-3 spoken sentences) + the child's next passage (1-2 sentences). TTS speaks the beat. Mic is muted during playback. |
 | CHILD_READS | Narrator hands over | Mic streams to Azure Pronunciation Assessment with the passage as referenceText. Tracker follows word by word. |
 | COACH | Word AccuracyScore < 60 (after leniency table, §9.3), or Omission, or pause > 3000ms on a word | Short coaching line ("Let's sound it out: b... l... ue"). Back to CHILD_READS on the same word. Max 2 coach attempts per word, then narrator says the word warmly and moves on. |
 | ENCOURAGE | 2 consecutive passages with all words >= 80 accuracy | One short praise line naming something specific, then NARRATE. |
 | TALK | Child taps the talk button (push-to-talk), any time | Pause current mode. Switch Azure to plain speech recognition. Transcribe, classify intent (§5), route. Then resume or transition. |
-| SOCRATIC | TALK intent = question_about_story_or_world | Narrator responds with ONE guiding question. Max 3 guiding questions, then a strong hint, then let the child conclude. Weave back to the story in one sentence, then NARRATE. |
 | REMIX | TALK intent = change_request ("I want dragons") | Discard the buffered next beat. Narrator acknowledges enthusiastically and regenerates the next beat + passage with the new theme but the SAME difficulty, SAME target skills, SAME must_use words. |
 | ADAPT | 3+ COACH entries within one passage, or frustration detected | Difficulty down one level. Discard buffered beat. Regenerate next passage, shorter and simpler. |
-| END | Beat list complete, 15 min elapsed, or child wants to stop | Closing line referencing something specific the child did. Wraps the story in one beat. Save transcript. |
+| WRAP | Beat list complete or the session cap is reached | Narrator stops the story at a moment of tension and says when it picks up. One concrete thing she can do now that she could not before, then "one more bit?" — answered by voice or by button. Yes gives exactly one more beat. |
+| END | She said no, she asked to stop, or the extra beat is finished | Warm goodbye, cliffhanger left standing. Save transcript. Asking to stop skips WRAP entirely: no upsell. |
 
 Cross-cutting rules:
-- Always keep ONE beat buffered; discard the buffer on REMIX, ADAPT, or SOCRATIC.
+- Always keep ONE beat buffered; discard the buffer on REMIX, ADAPT, or a cameo.
 - Every Azure word result is written to `reading_events` immediately.
 - Silence in CHILD_READS: 8s gentle prompt, 20s more a friendly check-in, 45s total pause the session with a resume screen. Never nag more than twice.
 - All mode transitions are appended to the session transcript with timestamps.
@@ -135,11 +137,20 @@ Flow when tapped:
 1. Immediately stop any TTS playback and stop pronunciation assessment.
 2. Start plain Azure speech recognition.
 3. No intelligible speech within 5s: playful nudge, return to the previous mode at the same word.
-4. On transcript: one Haiku call classifies intent into exactly one of:
-   - `help_with_word` — answer DIRECTLY (procedural help is never Socratic), then CHILD_READS.
-   - `question_about_story_or_world` — enter SOCRATIC.
+4. On transcript: ONE Haiku call (`lib/llm/absorb.ts`) does three jobs at once — classify the
+   intent, write the single line Ollie says back, and extract what is worth keeping. One round
+   trip, because the child is waiting through all of it.
+
+   **The acknowledgment is never empty.** If she says something, Ollie says something. Model
+   failure, network failure, schema failure — all of them still produce a line. A child who
+   volunteers something and hears nothing has learned that talking to Ollie does nothing.
+
+   The intent is one of:
+   - `help_with_word` — answer DIRECTLY, then CHILD_READS.
+   - `question_about_story` — answer it from inside the story. The answer is in the passage she is holding.
+   - `question_about_world` — the question jar (§16). Ollie says he does not know and that they will find out; the question seeds a later session's plan.
    - `change_request` — enter REMIX.
-   - `chitchat` — one warm sentence, logged as an interest signal, weave back.
+   - `chitchat` — the acknowledgment is the whole response. Kept as a note (§16), never discussed, and the passage she is reading is never rewritten underneath her.
    - `want_to_stop` — enter END gracefully. Log `early_exit`. Never guilt-trip.
    - `sensitive_topic` — FIXED comfort template, never improvised, log a `sensitive_topic` flag for the parent, gently return to the story.
    - `unclear` — "Hmm, I didn't catch that! Want to tell me again, or keep reading?"
@@ -273,7 +284,10 @@ In CHILD_READS, audio matching nothing in the reference text is ignored — not 
 2. Run `updateMastery` over all new `reading_events` since last consolidation.
 3. One Sonnet call: current memory + session transcript → updated `{interests, personality_notes, canon}`.
 4. Write updated memory, bump version.
-5. Run `pickTargets`, generate the next session plan, store it.
+5. Run `pickTargets`, pick up to two queued notes and the newest queued question
+   (`pickPlanNotes`), generate the next session plan from them, store it, and mark
+   those notes `used`. This is where a thing she said yesterday becomes what
+   today's story is about.
 6. Return a diff (old vs new memory) for the debug panel. "Watch it learn her."
 
 ---
@@ -285,6 +299,8 @@ In CHILD_READS, audio matching nothing in the reference text is ignored — not 
 - `GET /api/memory` — current child_memory + mastery
 - `GET /api/plan` — next session plan
 - `POST /api/child` — create/edit the demo child + onboarding notes
+- `GET /api/parent` — everything the parent view shows (read-only)
+- `POST /api/reset` — forget a child entirely, so the next session onboards. Requires her name as confirmation; there is no undo.
 
 ---
 
@@ -297,7 +313,7 @@ In CHILD_READS, audio matching nothing in the reference text is ignored — not 
 5. **State machine**: NARRATE / CHILD_READS / COACH / ENCOURAGE with templated coach lines.
 6. **TALK mode**: the button, barge-in, plain STT, Haiku intent router, `help_with_word`, `chitchat`, `want_to_stop`, sensitive-topic template. REMIX stubbed.
 7. **Live narrator**: replace templates with the narrator agent, buffered beat generation, safety pass, real REMIX.
-8. **SOCRATIC + ADAPT** + frustration path.
+8. **ADAPT** + frustration path.
 9. **Pedagogy + events**: reading_events writes, leniency table, best-attempt scoring, mastery math.
 10. **Consolidate button** + memory diff view + next-plan generation.
 11. **Demo polish**: story text on screen with current word highlighted, big friendly talk button, memory panel on the side.
@@ -308,4 +324,60 @@ Testing note: put the app in front of a real 4-6 year old no later than step 5. 
 
 ## 15. Out of scope (do not build)
 
-Auth, multi-child, parent app, payments, mobile, nightly cron, custom ASR, automatic off-script detection (the talk button replaces it), agent frameworks, analytics, i18n, voice cloning, avatar animation.
+Auth, multi-child, payments, mobile, nightly cron, custom ASR, automatic off-script
+detection (the talk button replaces it), agent frameworks, analytics, i18n, voice
+cloning, avatar animation.
+
+The read-only parent view at `/parent` is in scope and built; a parent *app* — accounts,
+notifications, settings, anything that writes — is not.
+
+---
+
+## 16. Free-form in, story out
+
+The child can say anything at any time. All of it is absorbed. Only one kind of thing
+ever comes back out: the story, and the reading session around it.
+
+Everything she says routes to exactly one of three destinations — the current story, a
+future story, or what we understand about her. Nothing routes to open-ended conversation.
+
+### The three speeds
+
+1. **Immediately.** Acknowledge, do not act. One short line naming her detail back, and
+   Ollie says he is keeping it. Then back to reading.
+2. **Later this session.** At most ONE detail returns as background scenery in a later
+   passage (`pickCameo`). Not the plot — just a presence, and nobody remarks on it.
+3. **Next session.** A detail or a question becomes what the story is *about*
+   (`pickPlanNotes`, consumed by the planner at consolidation).
+
+The delay is deliberate. Instant rewriting is a gimmick, and it teaches a child that
+interrupting reshapes the world — which is more fun than reading and will replace it. A
+promise visibly kept a few minutes later, then paid off properly the next day, is what
+makes the book feel alive. The `child_notes` row she can see in the notebook is how she
+knows the rest were queued rather than forgotten.
+
+### The caps are the quality control
+
+`MAX_CAMEOS_PER_SESSION = 1` and `MAX_SUBJECTS_PER_PLAN = 2` are small integers rather
+than a weighting model, because a small integer cannot fail in an interesting way. A
+story built from everything she has ever said reads like a list, not a story.
+
+### The question jar
+
+"Why is the sky blue?" is not answered. Ollie says he does not know and that they will
+find out — and the next session's story is someone climbing up to see. Curiosity
+sustained beats curiosity resolved, especially at six. Questions about the story in
+front of her are different: those get a real answer, immediately, because the answer is
+in the passage she is holding and deflecting would read as evasion.
+
+### Mood is absorbed, not discussed
+
+"I'm tired today" does not open a conversation about feelings. It shortens the session
+and drops the difficulty, silently. Tutors do this; therapists talk about it. She still
+gets an answer out loud — a few words, then on with the story.
+
+### The naming rule
+
+Things personal to her are kept literally: her cat, her sister, her tooth, her friend.
+Brands, public figures and known characters are generalized into their category — the
+classifier is asked to do it, and `generalizeSubject` is the backstop.

@@ -2,15 +2,20 @@
 
 export type Mode =
   | 'IDLE'
+  /** Voice onboarding for a child we have never met. */
+  | 'ONBOARDING'
+  /** The doorway before the story: Ollie asks, the child talks, nothing is discussed. */
+  | 'DOORWAY'
   | 'NARRATE'
   | 'CHILD_READS'
   | 'COACH'
   | 'ENCOURAGE'
   | 'TALK'
-  | 'SOCRATIC'
   | 'REMIX'
   | 'ADAPT'
   | 'PAUSED'
+  /** Cliffhanger delivered; listening for "one more bit?". */
+  | 'WRAP'
   | 'END';
 
 export type ErrorType =
@@ -23,12 +28,36 @@ export type ErrorType =
 
 export type Intent =
   | 'help_with_word'
-  | 'question_about_story_or_world'
+  /** About the story in front of her — answered now, inside the story. */
+  | 'question_about_story'
+  /** Curiosity about the world — goes in the question jar, answered by a future story. */
+  | 'question_about_world'
   | 'change_request'
   | 'chitchat'
   | 'want_to_stop'
   | 'sensitive_topic'
   | 'unclear';
+
+/** What kind of thing the child volunteered. Drives how a note is reused later. */
+export type NoteKind = 'event' | 'interest' | 'question' | 'person' | 'mood';
+
+export type NoteStatus = 'queued' | 'cameo' | 'used';
+
+/** One thing the child told us, kept for a later story. See db/schema.sql. */
+export interface ChildNote {
+  id: number;
+  kind: NoteKind;
+  /** Short noun phrase, generalized if it named a brand or a public figure. */
+  subject: string;
+  /** What she actually said. */
+  detail: string | null;
+  weight: number;
+  status: NoteStatus;
+  ts?: string;
+}
+
+/** Mood is absorbed, never discussed: it only moves two deterministic knobs. */
+export type Mood = 'tired' | 'sad' | 'excited';
 
 export interface SessionPlan {
   goal: string;
@@ -111,9 +140,16 @@ export interface WordAssessment {
 // ---------------------------------------------------------------------------
 
 export type ClientMessage =
-  | { t: 'start' }
+  /** localHour is the child's clock, not the server's — it picks the opening. */
+  | { t: 'start'; localHour?: number }
   | { t: 'talk_start' }
   | { t: 'talk_end' }
+  /** Typed fallback for the one thing STT must not get wrong: her name. */
+  | { t: 'onboard_name'; name: string }
+  /** "Start reading" — closes the doorway early. */
+  | { t: 'doorway_done' }
+  /** Answer to "want one more bit?", by button rather than by voice. */
+  | { t: 'wrap_answer'; more: boolean }
   | { t: 'resume' }
   | { t: 'stop' }
   /** Speak a fixed line — verifies the audio path without involving the LLM. */
@@ -127,6 +163,16 @@ export type ServerMessage =
   | { t: 'passage'; text: string; words: string[] }
   | { t: 'word'; index: number; status: TrackedWord['status']; score: number | null; errorType: ErrorType | null }
   | { t: 'cursor'; index: number }
+  /**
+   * Provisional: Azure's interim hypothesis suggests she has just said this word.
+   * Carries no score and never decides anything — it exists so the highlight
+   * moves while she is still speaking, instead of a second later.
+   */
+  | { t: 'heard'; index: number }
+  /** Something she told us went in the notebook. Shown so she sees it was kept. */
+  | { t: 'note'; kind: NoteKind; subject: string }
+  /** Ollie needs her name typed, because STT and five-year-olds disagree. */
+  | { t: 'need_name'; heard: string | null }
   | { t: 'tts_start' }
   | { t: 'tts_end' }
   | { t: 'talk_open' }

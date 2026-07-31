@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query, one, getDemoChild } from '@/lib/db';
-import { SKILLS } from '@/lib/skills';
+import { one, getDemoChild, createChildWithDefaults } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,29 +36,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'name is required to create a child' }, { status: 400 });
     }
 
-    const created = await one<{ id: string }>(
-      'INSERT INTO children (name, age, onboarding_notes) VALUES ($1,$2,$3) RETURNING id, name, age, onboarding_notes',
-      [body.name, body.age ?? null, body.onboarding_notes ?? null],
-    );
-
     // A brand-new child needs a cold-start mastery profile and empty memory.
-    for (const skill of SKILLS) {
-      await query(
-        `INSERT INTO skill_mastery (child_id, skill_id, p_mastery)
-         VALUES ($1,$2,0.2) ON CONFLICT DO NOTHING`,
-        [created!.id, skill.id],
-      );
-    }
-    await query(
-      `INSERT INTO child_memory (child_id, interests, personality_notes, canon)
-       VALUES ($1,'[]','', '{}') ON CONFLICT DO NOTHING`,
-      [created!.id],
-    );
-    await query(
-      `INSERT INTO consolidation_state (child_id, last_event_id) VALUES ($1,0)
-       ON CONFLICT DO NOTHING`,
-      [created!.id],
-    );
+    const created = await createChildWithDefaults({
+      name: body.name,
+      age: body.age ?? null,
+      notes: body.onboarding_notes ?? null,
+    });
 
     return NextResponse.json({ child: created, created: true });
   } catch (err) {

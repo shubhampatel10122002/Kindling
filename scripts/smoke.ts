@@ -7,7 +7,7 @@ import { pool, query, getDemoChild, schemaIsReady, describeTarget } from '../lib
 import { model } from '../lib/llm/client';
 import { checkAzureCredentials } from '../server/azure';
 import { checkCartesia } from '../server/cartesia';
-import { classifyIntent } from '../lib/llm/intent';
+import { absorb } from '../lib/llm/absorb';
 import { env } from '../lib/env';
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
@@ -77,15 +77,19 @@ async function main() {
     return `${text.trim().slice(0, 20)}`;
   });
 
-  await check('Anthropic (Haiku intent router)', async () => {
-    const r = await classifyIntent({
+  await check('Anthropic (Haiku absorb pass)', async () => {
+    const r = await absorb({
       transcript: 'my dog is named Max!',
+      context: 'reading',
+      childName: 'Maya',
       currentPassage: 'The cat sat.',
       currentWord: 'cat',
       storyPremise: 'A cat looks for a bell',
     });
     if (r.intent !== 'chitchat') throw new Error(`expected chitchat, got ${r.intent}`);
-    return `classified as ${r.intent} (topic: ${r.interestTopic ?? 'none'})`;
+    // The acknowledgment is the part that must never come back empty.
+    if (!r.ack.trim()) throw new Error('absorb returned no acknowledgment');
+    return `${r.intent} -> said "${r.ack}" (kept: ${r.note?.subject ?? 'nothing'})`;
   });
 
   await check(`Azure Speech (${env.azureRegion})`, async () => {

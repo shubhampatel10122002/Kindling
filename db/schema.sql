@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS next_plans (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Everything the child volunteers, in her own terms. One row per thing worth
+-- keeping. `status` is the only mutable column: a note is queued when she says
+-- it, 'cameo' once it has appeared as background detail in a later passage, and
+-- 'used' once it has been the subject of a story.
+CREATE TABLE IF NOT EXISTS child_notes (
+  id BIGSERIAL PRIMARY KEY,
+  child_id UUID REFERENCES children(id),
+  session_id UUID REFERENCES sessions(id),
+  ts TIMESTAMPTZ DEFAULT now(),
+  -- event | interest | question | person | mood
+  kind TEXT NOT NULL,
+  -- Short noun phrase, already generalized if it named a brand or public figure.
+  subject TEXT NOT NULL,
+  -- What she actually said, kept verbatim for the parent view.
+  detail TEXT,
+  weight REAL DEFAULT 1,
+  -- queued | cameo | used
+  status TEXT NOT NULL DEFAULT 'queued',
+  used_at TIMESTAMPTZ
+);
+
 -- Watermark so consolidation only folds in reading_events it hasn't seen.
 CREATE TABLE IF NOT EXISTS consolidation_state (
   child_id UUID PRIMARY KEY REFERENCES children(id),
@@ -82,3 +103,4 @@ CREATE TABLE IF NOT EXISTS consolidation_state (
 
 CREATE INDEX IF NOT EXISTS reading_events_child_id_idx ON reading_events (child_id, id);
 CREATE INDEX IF NOT EXISTS sessions_child_started_idx ON sessions (child_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS child_notes_queue_idx ON child_notes (child_id, status, id);

@@ -13,8 +13,11 @@ import { skillsForWord, SKILLS } from '../lib/skills';
 import { AUDIO } from '../lib/env';
 import { floatPcmToWav } from '../lib/wav';
 import { pickPraiseWord, mentionsWord } from '../lib/praise';
-import { sanitizeAcknowledgment, summarizeReading } from '../lib/ack';
-import type { WordAssessment } from '../lib/types';
+import { sanitizeAcknowledgment, sanitizeSpokenLine, parseYesNo, summarizeReading } from '../lib/ack';
+import { planOpening, rememberLine } from '../lib/opening';
+import { pickCameo, pickPlanNotes, generalizeSubject, MAX_SUBJECTS_PER_PLAN } from '../lib/notes';
+import { guessName } from '../server/session';
+import type { ChildNote, WordAssessment } from '../lib/types';
 
 let passed = 0;
 let failed = 0;
@@ -194,6 +197,224 @@ console.log('\nPassage tracker (PLAN.md §9.4, §9.5)');
   t.markGiven(1);
   ok('given word advances the cursor', t.cursor === 2, String(t.cursor));
   ok('given word is excluded from wasStrong', !t.wasStrong());
+}
+
+// --------------------------------------------------------------------------
+console.log('\nWord detection hardening (words must not light up unspoken)');
+// --------------------------------------------------------------------------
+{
+  // She says something else entirely. Azure still scores the audio against the
+  // reference, and "the" in "I went to the park" is a real acoustic match — but
+  // one incidental function word inside a sentence of something else is not
+  // reading, and marking it read is the bug this gate exists to stop.
+  const t = new PassageTracker('The cat sat on the hat.');
+  const r = t.ingest([
+    word('The', 82),
+    word('cat', 0, 'Omission'),
+    word('sat', 0, 'Omission'),
+    word('on', 0, 'Omission'),
+    word('the', 0, 'Omission'),
+    word('hat', 0, 'Omission'),
+    word('I', 90, 'Insertion'),
+    word('went', 88, 'Insertion'),
+    word('to', 91, 'Insertion'),
+    word('park', 87, 'Insertion'),
+  ]);
+  ok('unrelated speech scores nothing', r.updates.length === 0, `${r.updates.length} updates`);
+  ok('unrelated speech marks no word read', t.words.every((w) => w.status !== 'passed'));
+  ok('unrelated speech triggers no coaching', r.needsCoaching === null);
+}
+{
+  // Azure reports the WHOLE reference text on every utterance, so the rest of
+  // the sentence comes back as Omission. Those are words she has not reached
+  // yet, not words she skipped — coaching her on them is coaching her on a word
+  // she was about to read.
+  const t = new PassageTracker('The cat sat on the hat.');
+  const r = t.ingest([
+    word('The', 92),
+    word('cat', 90),
+    word('sat', 91),
+    word('on', 0, 'Omission'),
+    word('the', 0, 'Omission'),
+    word('hat', 0, 'Omission'),
+  ]);
+  ok('words she read are credited', t.words.slice(0, 3).every((w) => w.status === 'passed'));
+  ok(
+    // The word at the cursor is 'current'; the rest are untouched. Neither is
+    // an error state, which is the point — she simply has not read them yet.
+    'words she has not reached are not marked wrong',
+    t.words.slice(3).every((w) => w.status === 'pending' || w.status === 'current'),
+    t.words.slice(3).map((w) => w.status).join(','),
+  );
+  ok('no coaching on an unread word', r.needsCoaching === null, String(r.needsCoaching));
+  ok('cursor sits on the next word', t.cursor === 3, String(t.cursor));
+}
+{
+  // A word she genuinely read past is still a skip.
+  const t = new PassageTracker('The cat sat on the hat.');
+  const r = t.ingest([
+    word('The', 92),
+    word('cat', 90),
+    word('sat', 0, 'Omission'),
+    word('on', 0, 'Omission'),
+    word('the', 0, 'Omission'),
+    word('hat', 88),
+  ]);
+  ok('a word read past is marked, not ignored', t.words[2].status === 'coaching', t.words[2].status);
+  ok('the word she jumped to is credited', t.words[5].status === 'passed');
+  ok('coaching points at the skipped word', r.needsCoaching === 2, String(r.needsCoaching));
+}
+{
+  // Silence, or noise that aligned to nothing.
+  const t = new PassageTracker('The cat sat.');
+  const r = t.ingest([
+    word('The', 0, 'Omission'),
+    word('cat', 0, 'Omission'),
+    word('sat', 0, 'Omission'),
+  ]);
+  ok('an utterance with no hits changes nothing', r.updates.length === 0);
+  ok('silence leaves the passage untouched', t.words.every((w) => w.status !== 'coaching'));
+}
+{
+  // Interim hypotheses move the highlight without scoring anything.
+  const t = new PassageTracker('The blue dragon sat.');
+  ok('partial finds the word just spoken', t.heard('The blue') === 1, String(t.heard('The blue')));
+  ok('partial ignores words that are not in the passage', t.heard('banana') === null);
+  ok('partial scores nothing', t.words.every((w) => w.bestScore === null));
+  ok('partial does not advance the real cursor', t.cursor === 0, String(t.cursor));
+}
+
+// --------------------------------------------------------------------------
+console.log('\nSession opening (time of day, time since last session)');
+// --------------------------------------------------------------------------
+{
+  // Whether to onboard is decided by whether a child row exists, not here. A
+  // null gap means we know her but have never read together — the seeded demo
+  // child, and anyone whose first session ended before it saved. She still gets
+  // asked something.
+  const firstStory = planOpening({ hoursSinceLast: null, localHour: 9, rand: 0 });
+  ok('no history yet → the first-story opening', firstStory.shape === 'first_story', firstStory.shape);
+  ok('she is still asked something', firstStory.question.length > 0, firstStory.question);
+  ok('and given room to answer', firstStory.maxTurns > 0);
+
+  const quick = planOpening({ hoursSinceLast: 1, localHour: 15, rand: 0 });
+  ok('back within the hour → quick return', quick.shape === 'quick_return');
+  ok('a quick return asks for one thing at most', quick.maxTurns === 1, String(quick.maxTurns));
+
+  ok('later the same day → same day', planOpening({ hoursSinceLast: 8, localHour: 18 }).shape === 'same_day');
+
+  const morning = planOpening({ hoursSinceLast: 24, localHour: 8, rand: 0 });
+  ok('next morning asks about yesterday', /yesterday/i.test(morning.question), morning.question);
+
+  const evening = planOpening({ hoursSinceLast: 24, localHour: 20, rand: 0 });
+  ok('evening asks about today', /your day/i.test(evening.question), evening.question);
+
+  ok('days away → long gap', planOpening({ hoursSinceLast: 100, localHour: 11 }).shape === 'long_gap');
+
+  // Same shape, different words — the opening must not be the same every day.
+  const variants = new Set(
+    [0, 0.4, 0.9].map((r) => planOpening({ hoursSinceLast: 24, localHour: 8, rand: r }).question),
+  );
+  ok('the opening varies within a shape', variants.size > 1, `${variants.size} variants`);
+}
+{
+  ok(
+    'what she said last time beats an open story thread',
+    /alligator/.test(rememberLine({ lastNoteSubject: 'an alligator at the park', openThread: 'the lost bell', rand: 0 }) ?? ''),
+  );
+  ok(
+    'an open thread is used when she said nothing',
+    /bell/.test(rememberLine({ lastNoteSubject: null, openThread: 'the lost bell', rand: 0 }) ?? ''),
+  );
+  ok('nothing remembered means nothing said', rememberLine({}) === null);
+}
+
+// --------------------------------------------------------------------------
+console.log('\nThe notebook (what she volunteered, and when it surfaces)');
+// --------------------------------------------------------------------------
+{
+  const note = (id: number, kind: ChildNote['kind'], subject: string, weight = 1): ChildNote => ({
+    id,
+    kind,
+    subject,
+    detail: null,
+    weight,
+    status: 'queued',
+  });
+
+  const queued = [
+    note(1, 'interest', 'dragons', 2),
+    note(2, 'question', 'why the sky is blue'),
+    note(3, 'event', 'a loose tooth', 3),
+    note(4, 'mood', 'tired'),
+  ];
+
+  const cameo = pickCameo(queued, 0);
+  ok('a cameo picks something you can picture', cameo?.subject === 'a loose tooth', cameo?.subject);
+  ok('one cameo per session, and no more', pickCameo(queued, 1) === null);
+  ok(
+    'moods and questions never become cameos',
+    pickCameo([note(9, 'mood', 'tired'), note(10, 'question', 'why is grass green')], 0) === null,
+  );
+
+  const plan = pickPlanNotes(queued);
+  ok('the story is built from at most two details', plan.material.length <= MAX_SUBJECTS_PER_PLAN);
+  ok('the heaviest detail leads', plan.material[0]?.subject === 'a loose tooth', plan.material[0]?.subject);
+  ok('the question jar hands back a question', plan.question?.subject === 'why the sky is blue');
+  ok('moods are absorbed, not turned into stories', !plan.material.some((n) => n.kind === 'mood'));
+
+  const spent = [{ ...note(5, 'event', 'a birthday'), status: 'used' as const }];
+  ok('a detail already used is not reused', pickPlanNotes(spent).material.length === 0);
+
+  // She mentions the same thing across sessions; it must not eat both slots.
+  const repeated = pickPlanNotes([
+    note(6, 'event', 'a loose tooth', 3),
+    note(7, 'event', 'A Loose Tooth', 3),
+    note(8, 'interest', 'dragons', 2),
+  ]);
+  ok('a repeated subject only takes one slot', repeated.material.length === 2, String(repeated.material.length));
+  ok('the second slot goes to something else', repeated.material[1]?.subject === 'dragons');
+}
+{
+  ok('a known character is generalized', generalizeSubject('Elsa') === 'a snow queen', generalizeSubject('Elsa'));
+  ok('a brand is generalized', /building game/.test(generalizeSubject('minecraft')));
+  ok('her own cat is kept literally', generalizeSubject('her cat Pepper') === 'her cat Pepper');
+}
+
+// --------------------------------------------------------------------------
+console.log('\nSpoken lines back to the child');
+// --------------------------------------------------------------------------
+{
+  ok(
+    'a short specific line survives',
+    sanitizeSpokenLine('A loose tooth! I am keeping that one.') ===
+      'A loose tooth! I am keeping that one.',
+  );
+  ok('a naked line gets punctuation for the voice', sanitizeSpokenLine('Nice') === 'Nice!');
+  ok('emoji are stripped before TTS', sanitizeSpokenLine('Wow 🎉 nice.') === 'Wow nice.');
+  ok('stage directions are stripped', sanitizeSpokenLine('(warmly) That is lovely.') === 'That is lovely.');
+  ok('a whole paragraph is rejected', sanitizeSpokenLine('a '.repeat(30)) === null);
+  ok(
+    'three sentences is a conversation, not an acknowledgment',
+    sanitizeSpokenLine('Oh! That is nice. Tell me more. I love it.') === null,
+  );
+  ok('nothing in, nothing out', sanitizeSpokenLine('') === null);
+  // Unlike the between-turns acknowledgment, this one is allowed to name things.
+  ok('naming her detail is the whole point', sanitizeSpokenLine('A puppy. What colour?') !== null);
+}
+{
+  ok('yes means one more', parseYesNo('yes please') === true);
+  ok('yeah means one more', parseYesNo('yeah!') === true);
+  ok('no means stop', parseYesNo('no thanks') === false);
+  ok('the decisive word leads', parseYesNo("no, I'm done") === false);
+  ok('a mumble is not a yes', parseYesNo('um') === null);
+  ok('silence is not a yes', parseYesNo(null) === null);
+}
+{
+  ok('a name is pulled out of a sentence', guessName('my name is Maya') === 'Maya');
+  ok('filler before the name is dropped', guessName("um, I'm sam") === 'Sam');
+  ok('a bare name works', guessName('Rosie') === 'Rosie');
+  ok('no speech means no guess', guessName(null) === null);
 }
 
 // --------------------------------------------------------------------------

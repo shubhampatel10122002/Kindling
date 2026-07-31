@@ -25,7 +25,7 @@ Every turn returns exactly this (zod-validated via `generateObject`):
 - `speak_text` goes straight to TTS. Written to be **spoken**: no markdown, no
   stage directions, no emoji.
 - `child_passage` is `null` for any turn where the child should not be reading
-  (COACH, SOCRATIC, CHITCHAT, ANSWER_DIRECTLY, CLOSING).
+  (COACH, ANSWER_IN_STORY, ANSWER_DIRECTLY, CLIFFHANGER, CLOSING).
 
 ## System prompt structure
 
@@ -57,12 +57,24 @@ The state machine passes a `NarratorMode` plus free-text context. Modes:
 | `NEXT_BEAT` | passage finished cleanly | yes |
 | `COACH` | stuck on a word (LLM path; templates handle early builds) | no |
 | `ENCOURAGE` | 2 consecutive strong passages | yes |
-| `SOCRATIC` | thinking question — ONE guiding question | no |
-| `ANSWER_DIRECTLY` | procedural question, or 4th Socratic turn | no |
-| `CHITCHAT` | child shared something about their life | no |
+| `ANSWER_IN_STORY` | question about the story — answer it, from inside the story | no |
+| `ANSWER_DIRECTLY` | procedural question (what a word says, how this works) | no |
 | `REMIX` | change request — same difficulty/skills/words, new costume | yes |
 | `ADAPT` | struggling — shorter, simpler, offer a choice | yes |
-| `CLOSING` | END — wrap in one beat, never a cliffhanger | no |
+| `CLIFFHANGER` | time to stop — leave it at a moment of tension, unresolved | no |
+| `CLOSING` | goodbye — warm, two sentences, cliffhanger left standing | no |
+
+There is no Socratic mode. A question about the story gets a real answer,
+because the answer is in the passage she is holding and deflecting reads as
+evasion. A question about the *world* never reaches the narrator at all: the
+absorb pass tells her Ollie does not know and they will find out, and the
+question becomes the seed of a later session's plan.
+
+**CLIFFHANGER then CLOSING is one sequence, not two endings.** The cliffhanger
+stops the story mid-tension; the state machine then offers exactly one more
+beat; CLOSING says goodbye without resolving anything. A narrator that wraps
+the story up in CLIFFHANGER has removed the reason to come back tomorrow, which
+is why the safety pass checks for it.
 
 **REMIX is the subtle one**: the child changes the costume, the lesson stays.
 Always restate difficulty, target skills, and must-use words in the context
@@ -122,7 +134,7 @@ over `speak_text` + `child_passage`:
 - `age_appropriate`
 - `on_story`
 - `obeys_vocab_constraints` (checks the **child passage** only; passes if null)
-- `withheld_answer_if_socratic` (passes when mode isn't SOCRATIC)
+- `unresolved_if_cliffhanger` (passes when mode isn't CLIFFHANGER)
 - `no_brand_or_ip`
 
 On failure: regenerate once with the rejection reason appended, re-check, and if

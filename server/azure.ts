@@ -105,6 +105,12 @@ export class PronunciationSession {
         );
         const parsed = json ? JSON.parse(json) : null;
         const rawWords: RawWord[] | undefined = parsed?.NBest?.[0]?.Words;
+        // DUMP_AZURE=1 prints exactly what Azure said about one utterance. When
+        // a word lights up that was never spoken, this is the only place the
+        // answer lives — the parsed form has already thrown away the evidence.
+        if (process.env.DUMP_AZURE) {
+          console.log('[azure raw]', JSON.stringify({ text: e.result.text, words: rawWords }, null, 2));
+        }
         this.cb.onWords(parseWords(rawWords), e.result.text ?? '');
       } catch (err) {
         this.cb.onError?.(`failed to parse assessment: ${String(err)}`);

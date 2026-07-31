@@ -26,9 +26,12 @@ const schema = z.object({
     .describe('Nothing scary, violent, or sad about family. Warm, simple language.'),
   no_brand_or_ip: z.boolean().describe('No real-world brands or copyrighted characters.'),
   on_story: z.boolean().describe('Belongs to the story world, or is a natural reply to the child.'),
-  withheld_answer_if_socratic: z
+  unresolved_if_cliffhanger: z
     .boolean()
-    .describe('If MODE is SOCRATIC, a guiding question was asked instead of the answer given. Otherwise true.'),
+    .describe(
+      'If MODE is CLIFFHANGER, the story stops at a moment of tension with something still ' +
+        'about to happen, rather than being wrapped up or resolved. Otherwise true.',
+    ),
   reason: z.string().describe('Empty string when everything passed; otherwise the single worst problem.'),
 });
 
@@ -82,8 +85,10 @@ export async function runSafetyPass(args: {
     }
 
     // Pedagogy misses: worth one retry, not worth falling back to a template.
-    if (!object.withheld_answer_if_socratic) {
-      return { ok: false, severity: 'soft', reason: object.reason || 'gave the answer away in SOCRATIC mode' };
+    if (!object.unresolved_if_cliffhanger) {
+      // A resolved ending is not unsafe, just a worse session — she is meant to
+      // leave wanting the next one.
+      return { ok: false, severity: 'soft', reason: object.reason || 'resolved the cliffhanger' };
     }
     if (!object.on_story) {
       return { ok: false, severity: 'soft', reason: object.reason || 'off-story' };

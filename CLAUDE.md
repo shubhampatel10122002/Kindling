@@ -16,15 +16,19 @@ mode and asked for words.
 |---|---|
 | `server/index.ts` | WebSocket server (port 3001). One session per connection. |
 | `server/session.ts` | The state machine. Owns modes, timers, half-duplex gate, persistence. |
-| `server/tracker.ts` | Word-by-word passage following: best-attempt scoring, repeats, reading ahead. |
+| `server/tracker.ts` | Word-by-word passage following: best-attempt scoring, repeats, reading ahead, noise gating. |
 | `server/azure.ts` | Pronunciation assessment (reading) + plain STT (talking). |
 | `server/cartesia.ts` | Streaming TTS over the raw WebSocket, with per-context cancel for barge-in. |
 | `lib/leniency.ts` | Developmental-speech table. Extend this during kid testing. |
 | `lib/pedagogy.ts` | Mastery math and target selection. Pure, no LLM. |
+| `lib/opening.ts` | How a session opens, from local time and the gap since the last one. Pure. |
+| `lib/notes.ts` | The notebook: when a volunteered detail is allowed to surface. Pure. |
+| `lib/progress.ts` | "Words she can read now that she couldn't", and the parent view's history. |
 | `lib/skills.ts` | The skill list and word→skill mapping. |
-| `lib/llm/*` | Narrator, planner, intent router, safety pass, consolidation. |
+| `lib/llm/*` | Narrator, planner, absorb pass, safety pass, consolidation. |
 | `app/api/*` | REST surface (§13). |
-| `components/*` | Session UI + debug panel. |
+| `app/parent/*` | Read-only parent view. |
+| `components/*` | Session UI, parent view, debug panel. |
 
 ## Conventions
 
@@ -39,6 +43,12 @@ mode and asked for words.
   JSON `ClientMessage` / `ServerMessage` from `lib/types.ts`.
 - **`reading_events` is append-only.** Never UPDATE or DELETE.
 - Only `attempt = 1` results update mastery, so coached retries can't inflate it.
+- **If the child says something, Ollie says something.** The acknowledgment in
+  `lib/llm/absorb.ts` has a template fallback on every failure path, and nothing may
+  be added that can make it empty. Being ignored is the one failure a child
+  generalises from.
+- **Never rewrite the passage she is currently reading.** Volunteered details wait:
+  one cameo later this session, the subject of a story tomorrow (§16).
 
 ## Commands
 
@@ -50,8 +60,11 @@ npm run dev        # Next.js on :3000 + WS server on :3001
 ```
 
 Run `npm run selftest` after touching `tracker.ts`, `leniency.ts`, `pedagogy.ts`,
-or `skills.ts` — those four files carry the behaviour that is hardest to eyeball
-and easiest to break.
+`skills.ts`, `opening.ts`, or `notes.ts` — those files carry the behaviour that is
+hardest to eyeball and easiest to break.
+
+`DUMP_AZURE=1 npm run ws` prints the raw per-word JSON for every utterance. That is
+the only place the evidence lives when a word lights up that was never spoken.
 
 ## Gotchas found the hard way
 

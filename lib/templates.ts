@@ -88,3 +88,59 @@ export const openingLine = (name: string): string =>
 
 export const goodbyeLine = (name: string, detail: string): string =>
   `That was wonderful, ${name}. ${detail} See you next time!`;
+
+// ---------------------------------------------------------------------------
+// Absorbing what the child says
+// ---------------------------------------------------------------------------
+
+/**
+ * Last resort when the absorb call fails. She said something, so she hears
+ * something — an unclassified utterance still gets an answer. Deliberately
+ * vague rather than wrong: naming a detail we did not actually parse is worse
+ * than a warm "hm".
+ */
+export const absorbFallback = (): string =>
+  pick([
+    'Hm, I like that. I am keeping it.',
+    "Oh! I'm writing that down.",
+    'Mm. That one is going in my notebook.',
+    'I heard that. Keeping it for later.',
+  ]);
+
+/** Said once the doorway closes, so she knows the talking turned into something. */
+export const writingLine = (): string =>
+  pick(['Okay. I am writing.', "Right — I'm writing your story now.", 'Got it. Writing now.']);
+
+/** The question jar: we do not answer, we promise to find out. PLAN.md §5. */
+export const questionJarLine = (): string =>
+  pick([
+    "I don't know! Let's find out in a story.",
+    "You know what? I don't know either. Let's go and see.",
+    "Good question. I don't know yet — let's find out by reading.",
+  ]);
+
+/** Ollie has no idea who she is yet. */
+export const onboardingGreeting = (): string =>
+  "Hi! I'm Ollie, and I make stories for you to read. What's your name?";
+
+export const onboardingLikes = (name: string): string =>
+  `${name}. That's a good name. Tell me one thing you really like.`;
+
+export const onboardingWriting = (name: string): string =>
+  `Okay ${name}, I'm writing you a story right now. Watch.`;
+
+/** After the cliffhanger: exactly one more, or a warm ending. */
+export const oneMoreLine = (): string =>
+  pick([
+    'Want one more bit, or shall we save it for next time?',
+    'Should we do one more piece, or stop here?',
+    'One more bit, or is that a good place to stop?',
+  ]);
+
+/** The recap: one concrete thing she can do now that she could not before. */
+export const grewLine = (word: string): string =>
+  pick([
+    `And you read "${word}" all by yourself today. That one used to be tricky.`,
+    `You can read "${word}" now. You couldn't do that before.`,
+    `"${word}" used to catch you out, and today it didn't.`,
+  ]);
