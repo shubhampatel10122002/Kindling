@@ -180,6 +180,24 @@ export class CartesiaTTS {
     };
   }
 
+  /**
+   * Open the socket before anyone needs it.
+   *
+   * The first `speak` of the process otherwise pays a TLS handshake and a
+   * WebSocket upgrade before Cartesia has even seen the text — several hundred
+   * milliseconds, spent entirely on the very first thing the child hears. Called
+   * at boot, so that cost lands while nobody is waiting.
+   */
+  async warm(): Promise<void> {
+    try {
+      await this.connect();
+    } catch (err) {
+      // Not fatal: the next speak() retries, and a session that starts slowly
+      // beats a server that refuses to boot.
+      console.error('[cartesia] warm-up failed, will connect on demand', err);
+    }
+  }
+
   close() {
     this.failAll('shutting down');
     this.ws?.close();
