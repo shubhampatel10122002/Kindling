@@ -2,7 +2,7 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import { model } from './client';
 import { describeTargets, comfortableSkills } from '../pedagogy';
-import type { ChildMemory, Mastery, SessionPlan, Child } from '../types';
+import type { ChildMemory, ChildNote, Mastery, SessionPlan, Child } from '../types';
 
 const planSchema = z.object({
   goal: z.string().describe('One line: which skills this session practices and reviews'),
@@ -23,8 +23,12 @@ export async function generateSessionPlan(args: {
   memory: ChildMemory;
   mastery: Mastery[];
   targetSkills: string[];
+  /** What she told us last time, and the question she is still waiting on. */
+  notes?: { material: ChildNote[]; question: ChildNote | null };
 }): Promise<SessionPlan> {
   const { child, memory, mastery, targetSkills } = args;
+  const material = args.notes?.material ?? [];
+  const question = args.notes?.question ?? null;
 
   const interests = memory.interests
     .slice()
@@ -48,6 +52,19 @@ export async function generateSessionPlan(args: {
       '- must_use_words must be decodable words that exercise the target skills.',
       '- Reuse characters and open threads from canon when they exist. Continuity delights kids.',
       '- beats are short planning notes for the narrator, not final prose.',
+      '',
+      'If the child told us things last time, one of them becomes what this story is ABOUT —',
+      'named, with a role, not a passing mention. A child seeing her own week turn up in a book',
+      'is the strongest hook this product has. Use at most two of them: a story stuffed with',
+      'everything she has ever said reads like a list, not a story. Leave the rest for later.',
+      'Never mention that she told you — the detail is simply there in the world.',
+      '',
+      'If she asked a question, the story ANSWERS it by showing rather than explaining: she asked',
+      'why the sky is blue, so someone climbs up to see. She should finish the session knowing',
+      'more than she did and never have been lectured.',
+      '',
+      'Her own life is used literally — her cat, her sister, her tooth. Brands, public figures and',
+      'known characters are replaced by an original stand-in of the same kind.',
     ].join('\n'),
     prompt: [
       `Child: ${child.name}${child.age ? `, age ${child.age}` : ''}`,
@@ -58,6 +75,12 @@ export async function generateSessionPlan(args: {
       `Open threads: ${(canon.open_threads ?? []).join('; ') || 'none yet'}`,
       `Past story summaries: ${(canon.past_summaries ?? []).slice(-3).join(' | ') || 'none yet'}`,
       '',
+      material.length
+        ? `Things ${child.name} told us recently — build the story around one of these: ` +
+          material.map((n) => `${n.subject} (${n.kind})`).join('; ')
+        : '',
+      question ? `A question she is waiting on an answer to: ${question.subject}` : '',
+      material.length || question ? '' : '',
       `Target skills for this session: ${describeTargets(targetSkills)}`,
       `Target skill ids (copy these verbatim into target_skills): ${targetSkills.join(', ')}`,
       `Skills the child is already comfortable with: ${

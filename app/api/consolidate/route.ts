@@ -3,7 +3,8 @@ import { query, one, getDemoChild } from '@/lib/db';
 import { updateMastery, pickTargets, decayInterests, type ReadingEventRow } from '@/lib/pedagogy';
 import { consolidateMemory, diffMemory } from '@/lib/llm/consolidate';
 import { generateSessionPlan, fallbackPlan } from '@/lib/llm/planner';
-import type { ChildMemory, Mastery, TranscriptEntry } from '@/lib/types';
+import { pickPlanNotes } from '@/lib/notes';
+import type { ChildMemory, ChildNote, Mastery, TranscriptEntry } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -137,12 +138,34 @@ export async function POST() {
     );
     const targets = pickTargets(mastery);
 
+    // What she volunteered becomes what tomorrow's story is about. The caps live
+    // in pickPlanNotes: at most two details and one question, so a story built
+    // from her week reads like a story rather than a list of everything she said.
+    const queued = await query<ChildNote>(
+      `SELECT id, kind, subject, detail, weight, status FROM child_notes
+       WHERE child_id = $1 AND status <> 'used' ORDER BY id DESC LIMIT 40`,
+      [child.id],
+    );
+    const notes = pickPlanNotes(queued);
+
     let nextPlan;
     try {
-      nextPlan = await generateSessionPlan({ child, memory: after, mastery, targetSkills: targets });
+      nextPlan = await generateSessionPlan({
+        child,
+        memory: after,
+        mastery,
+        targetSkills: targets,
+        notes,
+      });
     } catch (err) {
       console.error('[consolidate] planner failed, using fallback', err);
       nextPlan = fallbackPlan(child, targets);
+    }
+
+    // Only mark them spent once a plan actually exists to spend them on.
+    const spent = [...notes.material, ...(notes.question ? [notes.question] : [])];
+    for (const n of spent) {
+      await query("UPDATE child_notes SET status = 'used', used_at = now() WHERE id = $1", [n.id]);
     }
 
     await query(
@@ -160,6 +183,8 @@ export async function POST() {
         p_mastery: Number(u.p_mastery.toFixed(3)),
       })),
       targets,
+      notesUsed: spent.map((n) => ({ kind: n.kind, subject: n.subject })),
+      notesQueued: queued.length - spent.length,
       diff: diffMemory(before, after),
       before,
       after: { ...after, version: nextVersion },

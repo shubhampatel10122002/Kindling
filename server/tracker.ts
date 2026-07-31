@@ -37,6 +37,22 @@ export interface IngestResult {
 /** How far ahead we'll look to realign when a child skips or reads ahead. */
 const LOOKAHEAD = 3;
 
+/**
+ * An utterance this weak is treated as noise and ingested as nothing.
+ *
+ * Azure scores audio against the reference text, so unrelated speech still
+ * produces per-word results — and a child saying "I went to the park" while the
+ * passage reads "the cat sat on the hat" lands a real match on "the". One
+ * incidental function word inside a sentence of something else is not reading,
+ * and marking it read is how words turn green that were never spoken.
+ */
+const MIN_HITS_WHEN_MOSTLY_INSERTIONS = 2;
+
+/** Did Azure actually hear audio for this reference word? */
+function isHit(a: WordAssessment): boolean {
+  return a.errorType !== 'Omission' && a.errorType !== 'Insertion';
+}
+
 export class PassageTracker {
   readonly words: TrackedWord[];
   private furthest = 0;
@@ -111,32 +127,52 @@ export class PassageTracker {
   }
 
   /**
-   * Fold one utterance's worth of Azure word results into the tracker.
+   * Interim hypothesis from Azure -> the word she appears to have just said.
+   *
+   * Scores nothing and changes no state. It exists so the highlight moves while
+   * she is still speaking: the scored result only lands after end-of-utterance
+   * silence, which is a second later and feels broken to a child who has already
+   * moved on. Partial hypotheses grow word by word, so the last token is the one
+   * she said most recently.
    */
-  ingest(assessments: WordAssessment[]): IngestResult {
-    const updates: WordUpdate[] = [];
+  heard(partialText: string): number | null {
+    const tokens = tokenize(partialText).map(normalizeWord).filter(Boolean);
+    const last = tokens[tokens.length - 1];
+    if (!last) return null;
+
+    const from = this.firstUnresolved() ?? this.words.length;
+    for (let i = from; i < Math.min(from + LOOKAHEAD + 2, this.words.length); i++) {
+      if (normalizeWord(this.words[i].expected) === last) return i;
+    }
+    return null;
+  }
+
+  /**
+   * Resolve each Azure result to the passage word it refers to, without touching
+   * any state. Separating this from applying it is what makes the guards below
+   * possible: they need to see the whole utterance before deciding any of it.
+   */
+  private align(assessments: WordAssessment[]): { a: WordAssessment; target: number }[] {
+    const resolved: { a: WordAssessment; target: number }[] = [];
     let pointer = this.firstUnresolved() ?? this.words.length;
-    const recentlyExpected: string[] = [];
 
     for (const a of assessments) {
       const spoken = normalizeWord(a.word);
       if (!spoken) continue;
 
-      // Insertions: a repetition of the last 1-2 expected words is a stutter or a
-      // run-up, not an error. Anything else unmatched is treated as noise. §9.4/§9.6
-      if (a.errorType === 'Insertion') {
-        continue;
-      }
+      // Insertions are stutters, run-ups, or speech that is not in the passage
+      // at all. Never an error, never a match. §9.4/§9.6
+      if (a.errorType === 'Insertion') continue;
 
       // Align by matching the reference word. With enableMiscue Azure returns
       // Words[] in reference order (including Omissions), so `Word` is the
       // reference token — a normalized match is the reliable signal.
       //
-      // We search the whole passage, preferring the nearest match at or after
-      // the cursor, so a child who reads ahead is credited correctly. If nothing
-      // matches, we skip the result rather than scoring it against whatever word
-      // happens to be under the cursor — crediting or penalising the wrong word
-      // is far worse than ignoring one utterance (§9.6 noise gating).
+      // The window starts at the pointer and only moves forward, so a child who
+      // reads ahead is credited while a stray word cannot reach back and claim
+      // something already behind her. Nothing matched means we ignore the result
+      // rather than score it against whatever happens to be under the cursor:
+      // crediting the wrong word is far worse than ignoring one utterance.
       let target = -1;
       for (let i = pointer; i < Math.min(pointer + LOOKAHEAD + 1, this.words.length); i++) {
         if (normalizeWord(this.words[i].expected) === spoken) {
@@ -144,17 +180,47 @@ export class PassageTracker {
           break;
         }
       }
-      if (target < 0) {
-        // Re-reading a word already resolved (a self-correction that arrived
-        // late, or the run-up to the current word). Harmless — ignore it.
-        continue;
-      }
+      if (target < 0) continue;
+
+      resolved.push({ a, target });
+      pointer = target + 1;
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Fold one utterance's worth of Azure word results into the tracker.
+   */
+  ingest(assessments: WordAssessment[]): IngestResult {
+    const updates: WordUpdate[] = [];
+    const resolved = this.align(assessments);
+
+    const hits = resolved.filter((r) => isHit(r.a));
+    const insertions = assessments.filter((a) => a.errorType === 'Insertion').length;
+
+    // Noise gate (§9.6). Nothing in this utterance was actually heard against the
+    // passage, or she was mostly saying something else and one incidental word
+    // happened to line up. Either way this is not reading, so it scores nothing.
+    if (hits.length === 0) {
+      return { updates, needsCoaching: null, complete: this.isComplete() };
+    }
+    if (insertions > hits.length && hits.length < MIN_HITS_WHEN_MOSTLY_INSERTIONS) {
+      return { updates, needsCoaching: null, complete: this.isComplete() };
+    }
+
+    // Azure reports the WHOLE reference text on every utterance, so every word
+    // she has not reached yet comes back as an Omission. Those are not skips —
+    // they are the rest of the sentence. A word only counts as skipped when she
+    // demonstrably read past it, which means a later word in this same utterance
+    // was actually heard.
+    const lastHeard = Math.max(...hits.map((r) => r.target));
+
+    for (const { a, target } of resolved) {
+      if (a.errorType === 'Omission' && target > lastHeard) continue;
 
       const word = this.words[target];
-      if (!word || word.status === 'passed' || word.status === 'given') {
-        pointer = this.firstUnresolved() ?? this.words.length;
-        continue;
-      }
+      if (!word || word.status === 'passed' || word.status === 'given') continue;
 
       const verdict = applyLeniency(a);
       word.attempts += 1;
@@ -181,11 +247,6 @@ export class PassageTracker {
           pause_ms: 0,
         },
       });
-
-      recentlyExpected.push(spoken);
-      if (recentlyExpected.length > 2) recentlyExpected.shift();
-
-      pointer = this.firstUnresolved() ?? this.words.length;
     }
 
     this.advanceCursor();

@@ -25,6 +25,7 @@ export const EXPECTED_TABLES = [
   'child_memory',
   'child_memory_history',
   'session_flags',
+  'child_notes',
   'next_plans',
   'consolidation_state',
 ] as const;
@@ -145,4 +146,50 @@ export async function getDemoChild() {
   return one<{ id: string; name: string; age: number | null; onboarding_notes: string | null }>(
     'SELECT id, name, age, onboarding_notes FROM children ORDER BY name LIMIT 1',
   );
+}
+
+/**
+ * Create a child with everything a first session needs: a cold-start mastery
+ * profile, empty memory, and a consolidation watermark.
+ *
+ * There is no placement test here and there never will be — every skill starts
+ * at the same 0.2 prior and the first few sentences she reads calibrate us.
+ */
+export async function createChildWithDefaults(args: {
+  name: string;
+  age?: number | null;
+  notes?: string | null;
+}): Promise<{ id: string; name: string; age: number | null; onboarding_notes: string | null }> {
+  const { SKILLS } = await import('./skills');
+
+  const child = await one<{
+    id: string;
+    name: string;
+    age: number | null;
+    onboarding_notes: string | null;
+  }>(
+    `INSERT INTO children (name, age, onboarding_notes) VALUES ($1,$2,$3)
+     RETURNING id, name, age, onboarding_notes`,
+    [args.name, args.age ?? null, args.notes ?? null],
+  );
+
+  for (const skill of SKILLS) {
+    await query(
+      `INSERT INTO skill_mastery (child_id, skill_id, p_mastery)
+       VALUES ($1,$2,0.2) ON CONFLICT DO NOTHING`,
+      [child!.id, skill.id],
+    );
+  }
+  await query(
+    `INSERT INTO child_memory (child_id, interests, personality_notes, canon)
+     VALUES ($1,'[]','', '{}') ON CONFLICT DO NOTHING`,
+    [child!.id],
+  );
+  await query(
+    `INSERT INTO consolidation_state (child_id, last_event_id) VALUES ($1,0)
+     ON CONFLICT DO NOTHING`,
+    [child!.id],
+  );
+
+  return child!;
 }

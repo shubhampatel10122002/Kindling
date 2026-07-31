@@ -30,32 +30,29 @@ wss.on('connection', async (ws) => {
       return;
     }
 
+    // No child is not an error any more: it means we have never met her, and the
+    // session opens with onboarding instead of a story. `npm run db:seed` is now
+    // a convenience for demos rather than a precondition.
     const child = await getDemoChild();
-    if (!child) {
-      ws.send(
-        JSON.stringify({
-          t: 'error',
-          message: 'The database has no child seeded. Run `npm run db:seed`, then reload.',
-        }),
-      );
-      ws.close();
-      return;
-    }
 
-    const memoryRow = await one<ChildMemory & { child_id: string }>(
-      'SELECT interests, personality_notes, canon, version FROM child_memory WHERE child_id = $1',
-      [child.id],
-    );
+    const memoryRow = child
+      ? await one<ChildMemory & { child_id: string }>(
+          'SELECT interests, personality_notes, canon, version FROM child_memory WHERE child_id = $1',
+          [child.id],
+        )
+      : null;
     const memory: ChildMemory = memoryRow ?? {
       interests: [],
       personality_notes: '',
       canon: {},
     };
 
-    const mastery = await query<Mastery>(
-      'SELECT skill_id, p_mastery, last_practiced FROM skill_mastery WHERE child_id = $1',
-      [child.id],
-    );
+    const mastery = child
+      ? await query<Mastery>(
+          'SELECT skill_id, p_mastery, last_practiced FROM skill_mastery WHERE child_id = $1',
+          [child.id],
+        )
+      : [];
 
     session = new Session(ws, child, memory, mastery);
 
@@ -80,7 +77,9 @@ wss.on('connection', async (ws) => {
 
     ws.on('error', (err) => console.error('[ws] socket error', err));
 
-    await session.start();
+    // The browser starts the session, not the server: it has to tell us what
+    // time it is where the child is, and the opening depends on that.
+    console.log('[ws] session ready, waiting for the browser to start it');
   } catch (err) {
     console.error('[ws] session failed to start', err);
     try {

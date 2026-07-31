@@ -20,8 +20,9 @@ async function main() {
   if (reset) {
     console.log('Dropping existing tables…');
     await query(`
-      DROP TABLE IF EXISTS session_flags, reading_events, next_plans, consolidation_state,
-        child_memory_history, child_memory, skill_mastery, sessions, children CASCADE;
+      DROP TABLE IF EXISTS session_flags, reading_events, child_notes, next_plans,
+        consolidation_state, child_memory_history, child_memory, skill_mastery,
+        sessions, children CASCADE;
     `);
   }
 
